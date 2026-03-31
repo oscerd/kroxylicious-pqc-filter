@@ -1,0 +1,100 @@
+# =============================================================================
+# Kroxylicious Proxy Configuration with PQC Record Encryption Filter
+# =============================================================================
+#
+# This example shows how to configure the PQC (Post-Quantum Cryptography)
+# record encryption filter with Kroxylicious.
+#
+# The filter uses ML-KEM (FIPS 203) key encapsulation with AES-256-GCM
+# symmetric encryption to protect Kafka record values against both
+# classical and quantum computing attacks.
+#
+# Prerequisites:
+#   1. Generate ML-KEM key pair:
+#      java -cp kroxylicious-pqc-filter.jar \
+#        io.kroxylicious.filter.pqc.PqcKeyGeneratorCli \
+#        ML_KEM_768 /etc/kroxylicious/pqc/
+#
+#   2. Place the kroxylicious-pqc-filter.jar in the Kroxylicious
+#      plugin directory (or classpath).
+# =============================================================================
+
+management:
+  endpoints:
+    prometheus: {}
+
+virtualClusters:
+  - name: pqc-secured-cluster
+    targetCluster:
+      bootstrapServers: kafka-broker-1:9092,kafka-broker-2:9092,kafka-broker-3:9092
+    gateways:
+      - name: pqc-gateway
+        portIdentifiesNode:
+          bootstrapAddress: localhost:9192
+    logNetwork: false
+    logFrames: false
+
+# ---------------------------------------------------------------------------
+# Filter Definitions
+# ---------------------------------------------------------------------------
+filterDefinitions:
+
+  # PQC Record Encryption Filter
+  # Encrypts records on Produce, decrypts on Fetch
+  - name: pqc-record-encryption
+    type: PqcRecordEncryptionFilterFactory
+    config:
+      # ML-KEM parameter set (ML_KEM_512, ML_KEM_768, ML_KEM_1024)
+      # ML_KEM_768 is NIST's recommended default (192-bit security)
+      kemAlgorithm: ML_KEM_768
+
+      # Hybrid mode combines ML-KEM + X25519 ECDH for defense-in-depth.
+      # Even if ML-KEM is broken, classical ECDH still protects the data.
+      # Recommended: true during the PQC transition period.
+      hybridMode: true
+
+      # Path to the ML-KEM public key (X.509 DER encoded)
+      publicKeyPath: /etc/kroxylicious/pqc/pqc-public.der
+
+      # Path to the ML-KEM private key (PKCS#8 DER encoded)
+      privateKeyPath: /etc/kroxylicious/pqc/pqc-private.der
+
+      # Topic patterns (regex) to encrypt. Only matching topics are processed.
+      # Default: [".*"] (all topics)
+      topicPatterns:
+        - "sensitive-.*"
+        - "pii-.*"
+        - "financial-transactions"
+
+# ---------------------------------------------------------------------------
+# Default Filter Chain (applied to all virtual clusters)
+# ---------------------------------------------------------------------------
+defaultFilters:
+  - pqc-record-encryption
+
+# =============================================================================
+# Alternative configurations
+# =============================================================================
+#
+# --- PQC-only mode (no hybrid, maximum quantum resistance) ---
+# config:
+#   kemAlgorithm: ML_KEM_1024
+#   hybridMode: false
+#   publicKeyPath: /etc/kroxylicious/pqc/pqc-public.der
+#   privateKeyPath: /etc/kroxylicious/pqc/pqc-private.der
+#
+# --- Encrypt ALL topics ---
+# config:
+#   kemAlgorithm: ML_KEM_768
+#   hybridMode: true
+#   publicKeyPath: /etc/kroxylicious/pqc/pqc-public.der
+#   privateKeyPath: /etc/kroxylicious/pqc/pqc-private.der
+#   topicPatterns:
+#     - ".*"
+#
+# --- Lightweight mode (smallest overhead, fastest) ---
+# config:
+#   kemAlgorithm: ML_KEM_512
+#   hybridMode: false
+#   publicKeyPath: /etc/kroxylicious/pqc/pqc-public.der
+#   privateKeyPath: /etc/kroxylicious/pqc/pqc-private.der

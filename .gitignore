@@ -1,0 +1,36 @@
+# Maven
+target/
+
+# IDE - IntelliJ
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# IDE - Eclipse
+.classpath
+.project
+.settings/
+bin/
+
+# IDE - VS Code
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Keys and certificates
+*.pem
+*.key
+*.p12
+*.jks
+*.keystore
+*.truststore
+*.pfx
+*.crt
+*.cert
+*.der

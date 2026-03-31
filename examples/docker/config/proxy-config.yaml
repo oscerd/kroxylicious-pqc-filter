@@ -1,0 +1,32 @@
+# =============================================================================
+# Kroxylicious Proxy Configuration for PQC Demo
+# =============================================================================
+
+management:
+  endpoints:
+    prometheus: {}
+
+virtualClusters:
+  - name: pqc-demo
+    targetCluster:
+      bootstrapServers: kafka:29092
+    gateways:
+      - name: pqc-gateway
+        portIdentifiesNode:
+          bootstrapAddress: 0.0.0.0:9192
+    logNetwork: false
+    logFrames: false
+
+filterDefinitions:
+  - name: pqc-encryption
+    type: PqcRecordEncryptionFilterFactory
+    config:
+      kemAlgorithm: ML_KEM_768
+      hybridMode: false
+      publicKeyPath: /opt/kroxylicious/pqc-keys/pqc-public.der
+      privateKeyPath: /opt/kroxylicious/pqc-keys/pqc-private.der
+      topicPatterns:
+        - "sensitive-.*"
+
+defaultFilters:
+  - pqc-encryption
