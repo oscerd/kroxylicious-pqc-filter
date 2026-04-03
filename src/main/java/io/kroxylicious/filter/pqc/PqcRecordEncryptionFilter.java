@@ -16,6 +16,7 @@
 package io.kroxylicious.filter.pqc;
 
 import io.kroxylicious.filter.pqc.crypto.PqcCryptoEngine;
+import io.kroxylicious.filter.pqc.crypto.PqcKeyManager;
 import io.kroxylicious.proxy.filter.FilterContext;
 import io.kroxylicious.proxy.filter.RequestFilterResult;
 import io.kroxylicious.proxy.filter.ResponseFilterResult;
@@ -65,10 +66,13 @@ public class PqcRecordEncryptionFilter implements
     private static final byte[] PQC_HEADER_VALUE = "true".getBytes();
 
     private final PqcCryptoEngine cryptoEngine;
+    private final PqcKeyManager keyManager;
     private final List<Pattern> topicPatterns;
 
-    PqcRecordEncryptionFilter(PqcCryptoEngine cryptoEngine, List<Pattern> topicPatterns) {
+    PqcRecordEncryptionFilter(PqcCryptoEngine cryptoEngine, PqcKeyManager keyManager,
+                              List<Pattern> topicPatterns) {
         this.cryptoEngine = cryptoEngine;
+        this.keyManager = keyManager;
         this.topicPatterns = topicPatterns;
     }
 
@@ -217,7 +221,8 @@ public class PqcRecordEncryptionFilter implements
                     Header[] cleanHeaders;
 
                     if (value != null && isPqcEncrypted(headers)) {
-                        decryptedValue = cryptoEngine.decrypt(value);
+                        PqcCryptoEngine engine = keyManager.resolveEngine(value);
+                        decryptedValue = engine.decrypt(value);
                         cleanHeaders = removePqcHeader(headers);
                     }
                     else {
