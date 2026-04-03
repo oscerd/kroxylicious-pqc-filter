@@ -46,6 +46,8 @@ import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.security.SecureRandom;
 import java.security.Security;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.security.spec.PKCS8EncodedKeySpec;
 import java.security.spec.X509EncodedKeySpec;
 import java.util.Arrays;
@@ -63,27 +65,39 @@ import java.util.Arrays;
  *
  * <h2>Encrypted message format</h2>
  * <pre>
- * PQC-only mode:
- * [1 byte: version] [2 bytes: encapsulation length] [N bytes: ML-KEM encapsulation]
+ * PQC-only mode (v3, current):
+ * [1 byte: version 0x03] [4 bytes: key ID] [2 bytes: encapsulation length]
+ * [N bytes: ML-KEM encapsulation] [12 bytes: AES-GCM IV]
+ * [remaining: AES-GCM ciphertext + 16-byte auth tag]
+ *
+ * Hybrid mode (v4, current):
+ * [1 byte: version 0x04] [4 bytes: key ID] [2 bytes: encapsulation length]
+ * [N bytes: ML-KEM encapsulation] [32 bytes: X25519 ephemeral public key]
  * [12 bytes: AES-GCM IV] [remaining: AES-GCM ciphertext + 16-byte auth tag]
  *
- * Hybrid mode:
- * [1 byte: version] [2 bytes: encapsulation length] [N bytes: ML-KEM encapsulation]
- * [32 bytes: X25519 ephemeral public key]
- * [12 bytes: AES-GCM IV] [remaining: AES-GCM ciphertext + 16-byte auth tag]
+ * Legacy formats (v1/v2) without key ID are still supported for decryption.
  * </pre>
  */
 public class PqcCryptoEngine {
 
     private static final Logger LOG = LoggerFactory.getLogger(PqcCryptoEngine.class);
 
+    // Legacy envelope versions (no key ID)
     private static final byte VERSION_PQC_ONLY = 0x01;
     private static final byte VERSION_HYBRID = 0x02;
+    // Current envelope versions (with 4-byte key ID)
+    private static final byte VERSION_PQC_ONLY_KEYED = 0x03;
+    private static final byte VERSION_HYBRID_KEYED = 0x04;
+
+    private static final int KEY_ID_LENGTH = 4;
     private static final int GCM_IV_LENGTH = 12;
     private static final int GCM_TAG_BITS = 128;
     private static final int X25519_PUBLIC_KEY_LENGTH = 32;
     private static final int AES_KEY_LENGTH = 32;
     private static final String AES_GCM = "AES/GCM/NoPadding";
+
+    /** Sentinel value indicating no key ID is present (legacy envelope). */
+    public static final int NO_KEY_ID = -1;
 
     private static final byte[] HKDF_SALT_PQC = "kroxylicious-pqc-v1".getBytes(java.nio.charset.StandardCharsets.UTF_8);
     private static final byte[] HKDF_INFO_PQC = "pqc-aes256-key".getBytes(java.nio.charset.StandardCharsets.UTF_8);
@@ -95,6 +109,7 @@ public class PqcCryptoEngine {
     private final PublicKey mlKemPublicKey;
     private final PrivateKey mlKemPrivateKey;
     private final SecureRandom secureRandom;
+    private final int keyId;
 
     // Static X25519 key pair for hybrid mode (persistent across encrypt/decrypt)
     private final PublicKey x25519StaticPublicKey;
@@ -122,6 +137,7 @@ public class PqcCryptoEngine {
         this.mlKemPublicKey = mlKemPublicKey;
         this.mlKemPrivateKey = mlKemPrivateKey;
         this.secureRandom = new SecureRandom();
+        this.keyId = computeKeyId(mlKemPublicKey);
 
         if (hybridMode) {
             if (x25519KeyPair != null) {
@@ -219,8 +235,23 @@ public class PqcCryptoEngine {
 
         // Read version byte
         byte version = buf.get();
-        if (version != VERSION_PQC_ONLY && version != VERSION_HYBRID) {
-            throw new GeneralSecurityException("Unsupported PQC envelope version: " + version);
+        boolean isHybridEnvelope;
+        switch (version) {
+            case VERSION_PQC_ONLY:
+            case VERSION_PQC_ONLY_KEYED:
+                isHybridEnvelope = false;
+                break;
+            case VERSION_HYBRID:
+            case VERSION_HYBRID_KEYED:
+                isHybridEnvelope = true;
+                break;
+            default:
+                throw new GeneralSecurityException("Unsupported PQC envelope version: " + version);
+        }
+
+        // Skip key ID for keyed versions (already extracted by caller if needed)
+        if (version == VERSION_PQC_ONLY_KEYED || version == VERSION_HYBRID_KEYED) {
+            buf.getInt(); // skip 4-byte key ID
         }
 
         // Read ML-KEM encapsulation
@@ -236,7 +267,7 @@ public class PqcCryptoEngine {
 
         byte[] aesKeyBytes;
 
-        if (version == VERSION_HYBRID) {
+        if (isHybridEnvelope) {
             // Read X25519 ephemeral public key
             byte[] ephemeralX25519PubKeyRaw = new byte[X25519_PUBLIC_KEY_LENGTH];
             buf.get(ephemeralX25519PubKeyRaw);
@@ -307,6 +338,53 @@ public class PqcCryptoEngine {
     }
 
     /**
+     * Return the key ID for this engine, derived from the ML-KEM public key.
+     */
+    public int getKeyId() {
+        return keyId;
+    }
+
+    /**
+     * Compute a 4-byte key ID from an ML-KEM public key.
+     * The key ID is the first 4 bytes of SHA-256(publicKey.getEncoded()),
+     * interpreted as a big-endian int.
+     */
+    public static int computeKeyId(PublicKey publicKey) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(publicKey.getEncoded());
+            return ByteBuffer.wrap(hash, 0, KEY_ID_LENGTH).getInt();
+        }
+        catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 not available", e);
+        }
+    }
+
+    /**
+     * Extract the key ID from an encrypted envelope without decrypting it.
+     *
+     * @param envelope the encrypted envelope bytes
+     * @return the key ID, or {@link #NO_KEY_ID} if the envelope uses a legacy format (v1/v2)
+     * @throws GeneralSecurityException if the envelope is too short or has an unsupported version
+     */
+    public static int extractKeyId(byte[] envelope) throws GeneralSecurityException {
+        if (envelope == null || envelope.length < 1) {
+            throw new GeneralSecurityException("Envelope is null or empty");
+        }
+        byte version = envelope[0];
+        if (version == VERSION_PQC_ONLY || version == VERSION_HYBRID) {
+            return NO_KEY_ID;
+        }
+        if (version == VERSION_PQC_ONLY_KEYED || version == VERSION_HYBRID_KEYED) {
+            if (envelope.length < 1 + KEY_ID_LENGTH) {
+                throw new GeneralSecurityException("Envelope too short to contain key ID");
+            }
+            return ByteBuffer.wrap(envelope, 1, KEY_ID_LENGTH).getInt();
+        }
+        throw new GeneralSecurityException("Unsupported PQC envelope version: " + version);
+    }
+
+    /**
      * Generate a new X25519 key pair for hybrid mode.
      */
     public static KeyPair generateX25519KeyPair() throws GeneralSecurityException {
@@ -336,14 +414,15 @@ public class PqcCryptoEngine {
 
     private byte[] assembleEnvelope(byte[] encapsulation, byte[] ephemeralX25519PubKey,
                                     byte[] iv, byte[] ciphertext) {
-        byte version = hybridMode ? VERSION_HYBRID : VERSION_PQC_ONLY;
-        int totalSize = 1 + 2 + encapsulation.length + GCM_IV_LENGTH + ciphertext.length;
+        byte version = hybridMode ? VERSION_HYBRID_KEYED : VERSION_PQC_ONLY_KEYED;
+        int totalSize = 1 + KEY_ID_LENGTH + 2 + encapsulation.length + GCM_IV_LENGTH + ciphertext.length;
         if (hybridMode) {
             totalSize += X25519_PUBLIC_KEY_LENGTH;
         }
 
         ByteBuffer buf = ByteBuffer.allocate(totalSize);
         buf.put(version);
+        buf.putInt(keyId);
         buf.putShort((short) encapsulation.length);
         buf.put(encapsulation);
         if (hybridMode && ephemeralX25519PubKey != null) {

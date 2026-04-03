@@ -24,8 +24,10 @@ import java.io.IOException;
 import java.security.GeneralSecurityException;
 import java.security.KeyPair;
 import java.util.Iterator;
+import java.util.Map;
 import java.util.ServiceConfigurationError;
 import java.util.ServiceLoader;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Manages ML-KEM key pairs for the PQC encryption filter.
@@ -38,6 +40,8 @@ public class PqcKeyManager {
 
     private final KemAlgorithm algorithm;
     private final KeyProvider keyProvider;
+    private final Map<Integer, PqcCryptoEngine> engineCache = new ConcurrentHashMap<>();
+    private volatile PqcCryptoEngine activeEngine;
 
     public PqcKeyManager(PqcEncryptionConfig config) throws GeneralSecurityException, IOException {
         this.algorithm = config.getKemAlgorithm();
@@ -65,11 +69,47 @@ public class PqcKeyManager {
 
     /**
      * Create a PqcCryptoEngine configured with the active key pair from this key manager's provider.
+     * The engine is cached by key ID for reuse during decryption.
      */
     public PqcCryptoEngine createEngine(boolean hybridMode) throws GeneralSecurityException {
         KeyPair keyPair = keyProvider.getActiveKeyPair(algorithm);
         KeyPair x25519KeyPair = hybridMode ? keyProvider.getX25519KeyPair() : null;
-        return new PqcCryptoEngine(algorithm, hybridMode, keyPair.getPublic(), keyPair.getPrivate(), x25519KeyPair);
+        PqcCryptoEngine engine = new PqcCryptoEngine(algorithm, hybridMode,
+                keyPair.getPublic(), keyPair.getPrivate(), x25519KeyPair);
+        this.activeEngine = engine;
+        engineCache.put(engine.getKeyId(), engine);
+        LOG.info("Active encryption key ID: 0x{}", Integer.toHexString(engine.getKeyId()));
+        return engine;
+    }
+
+    /**
+     * Resolve the appropriate engine to decrypt an envelope.
+     * Extracts the key ID from the envelope and returns a cached or newly created engine.
+     *
+     * @param envelope the encrypted envelope bytes
+     * @return the engine that can decrypt this envelope
+     * @throws GeneralSecurityException if the key ID cannot be resolved
+     */
+    public PqcCryptoEngine resolveEngine(byte[] envelope) throws GeneralSecurityException {
+        int envelopeKeyId = PqcCryptoEngine.extractKeyId(envelope);
+
+        if (envelopeKeyId == PqcCryptoEngine.NO_KEY_ID) {
+            // Legacy envelope without key ID — use the active engine
+            if (activeEngine == null) {
+                throw new GeneralSecurityException("No active engine available to decrypt legacy envelope");
+            }
+            return activeEngine;
+        }
+
+        // Check cache first
+        PqcCryptoEngine cached = engineCache.get(envelopeKeyId);
+        if (cached != null) {
+            return cached;
+        }
+
+        throw new GeneralSecurityException(
+                "No key pair found for key ID 0x" + Integer.toHexString(envelopeKeyId)
+                        + ". The key used to encrypt this record is not available in this key provider.");
     }
 
     /**

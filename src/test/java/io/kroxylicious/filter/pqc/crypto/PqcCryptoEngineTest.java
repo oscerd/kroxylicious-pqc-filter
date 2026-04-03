@@ -21,6 +21,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyPair;
 
@@ -160,7 +161,7 @@ class PqcCryptoEngineTest {
     }
 
     @Test
-    void envelopeVersionByteShouldBePqcOnly() throws Exception {
+    void envelopeVersionByteShouldBePqcOnlyKeyed() throws Exception {
         // Given
         KeyPair keyPair = PqcCryptoEngine.generateKeyPair(KemAlgorithm.ML_KEM_768);
         PqcCryptoEngine engine = new PqcCryptoEngine(
@@ -171,11 +172,11 @@ class PqcCryptoEngineTest {
         byte[] encrypted = engine.encrypt(plaintext);
 
         // Then
-        assertThat(encrypted[0]).isEqualTo((byte) 0x01); // VERSION_PQC_ONLY
+        assertThat(encrypted[0]).isEqualTo((byte) 0x03); // VERSION_PQC_ONLY_KEYED
     }
 
     @Test
-    void envelopeVersionByteShouldBeHybrid() throws Exception {
+    void envelopeVersionByteShouldBeHybridKeyed() throws Exception {
         // Given
         KeyPair keyPair = PqcCryptoEngine.generateKeyPair(KemAlgorithm.ML_KEM_768);
         PqcCryptoEngine engine = new PqcCryptoEngine(
@@ -186,7 +187,7 @@ class PqcCryptoEngineTest {
         byte[] encrypted = engine.encrypt(plaintext);
 
         // Then
-        assertThat(encrypted[0]).isEqualTo((byte) 0x02); // VERSION_HYBRID
+        assertThat(encrypted[0]).isEqualTo((byte) 0x04); // VERSION_HYBRID_KEYED
     }
 
     @ParameterizedTest
@@ -203,7 +204,7 @@ class PqcCryptoEngineTest {
         byte[] decrypted = engine.decrypt(encrypted);
 
         // Then
-        assertThat(encrypted[0]).isEqualTo((byte) 0x02);
+        assertThat(encrypted[0]).isEqualTo((byte) 0x04); // VERSION_HYBRID_KEYED
         assertThat(decrypted).isEqualTo(plaintext);
     }
 
@@ -263,5 +264,112 @@ class PqcCryptoEngineTest {
 
         // Then - hybrid adds 32 bytes for the X25519 ephemeral public key
         assertThat(hybridEncrypted.length).isEqualTo(pqcEncrypted.length + 32);
+    }
+
+    // --- Key ID tests ---
+
+    @Test
+    void shouldComputeDeterministicKeyId() throws Exception {
+        // Given
+        KeyPair keyPair = PqcCryptoEngine.generateKeyPair(KemAlgorithm.ML_KEM_768);
+
+        // When
+        int keyId1 = PqcCryptoEngine.computeKeyId(keyPair.getPublic());
+        int keyId2 = PqcCryptoEngine.computeKeyId(keyPair.getPublic());
+
+        // Then - same key always produces same ID
+        assertThat(keyId1).isEqualTo(keyId2);
+    }
+
+    @Test
+    void shouldComputeDifferentKeyIdsForDifferentKeys() throws Exception {
+        // Given
+        KeyPair keyPair1 = PqcCryptoEngine.generateKeyPair(KemAlgorithm.ML_KEM_768);
+        KeyPair keyPair2 = PqcCryptoEngine.generateKeyPair(KemAlgorithm.ML_KEM_768);
+
+        // When
+        int keyId1 = PqcCryptoEngine.computeKeyId(keyPair1.getPublic());
+        int keyId2 = PqcCryptoEngine.computeKeyId(keyPair2.getPublic());
+
+        // Then - different keys produce different IDs (statistically near-certain)
+        assertThat(keyId1).isNotEqualTo(keyId2);
+    }
+
+    @Test
+    void shouldEmbedKeyIdInEnvelope() throws Exception {
+        // Given
+        KeyPair keyPair = PqcCryptoEngine.generateKeyPair(KemAlgorithm.ML_KEM_768);
+        PqcCryptoEngine engine = new PqcCryptoEngine(
+                KemAlgorithm.ML_KEM_768, false, keyPair.getPublic(), keyPair.getPrivate());
+        byte[] plaintext = "key id test".getBytes(StandardCharsets.UTF_8);
+
+        // When
+        byte[] encrypted = engine.encrypt(plaintext);
+
+        // Then - key ID is at bytes 1-4
+        int embeddedKeyId = ByteBuffer.wrap(encrypted, 1, 4).getInt();
+        assertThat(embeddedKeyId).isEqualTo(engine.getKeyId());
+    }
+
+    @Test
+    void shouldExtractKeyIdFromEnvelope() throws Exception {
+        // Given
+        KeyPair keyPair = PqcCryptoEngine.generateKeyPair(KemAlgorithm.ML_KEM_768);
+        PqcCryptoEngine engine = new PqcCryptoEngine(
+                KemAlgorithm.ML_KEM_768, false, keyPair.getPublic(), keyPair.getPrivate());
+        byte[] encrypted = engine.encrypt("extract test".getBytes(StandardCharsets.UTF_8));
+
+        // When
+        int extractedKeyId = PqcCryptoEngine.extractKeyId(encrypted);
+
+        // Then
+        assertThat(extractedKeyId).isEqualTo(engine.getKeyId());
+    }
+
+    @Test
+    void shouldExtractKeyIdFromHybridEnvelope() throws Exception {
+        // Given
+        KeyPair keyPair = PqcCryptoEngine.generateKeyPair(KemAlgorithm.ML_KEM_768);
+        PqcCryptoEngine engine = new PqcCryptoEngine(
+                KemAlgorithm.ML_KEM_768, true, keyPair.getPublic(), keyPair.getPrivate());
+        byte[] encrypted = engine.encrypt("hybrid key id".getBytes(StandardCharsets.UTF_8));
+
+        // When
+        int extractedKeyId = PqcCryptoEngine.extractKeyId(encrypted);
+
+        // Then
+        assertThat(extractedKeyId).isEqualTo(engine.getKeyId());
+    }
+
+    @Test
+    void shouldReturnNoKeyIdForLegacyEnvelope() throws Exception {
+        // Given - construct a legacy v1 envelope manually
+        byte[] legacyEnvelope = new byte[]{0x01, 0x00, 0x10}; // version=1, encapLen=16
+
+        // When
+        int keyId = PqcCryptoEngine.extractKeyId(legacyEnvelope);
+
+        // Then
+        assertThat(keyId).isEqualTo(PqcCryptoEngine.NO_KEY_ID);
+    }
+
+    @Test
+    void shouldRejectExtractKeyIdFromNullEnvelope() {
+        assertThatThrownBy(() -> PqcCryptoEngine.extractKeyId(null))
+                .isInstanceOf(java.security.GeneralSecurityException.class)
+                .hasMessageContaining("null or empty");
+    }
+
+    @Test
+    void engineKeyIdShouldMatchComputedKeyId() throws Exception {
+        // Given
+        KeyPair keyPair = PqcCryptoEngine.generateKeyPair(KemAlgorithm.ML_KEM_768);
+
+        // When
+        PqcCryptoEngine engine = new PqcCryptoEngine(
+                KemAlgorithm.ML_KEM_768, false, keyPair.getPublic(), keyPair.getPrivate());
+
+        // Then
+        assertThat(engine.getKeyId()).isEqualTo(PqcCryptoEngine.computeKeyId(keyPair.getPublic()));
     }
 }

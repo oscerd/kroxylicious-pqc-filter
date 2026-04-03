@@ -101,6 +101,7 @@ public class PqcRecordEncryptionFilterFactory
         LOG.debug("Creating new PQC Record Encryption filter instance");
         return new PqcRecordEncryptionFilter(
                 sharedContext.cryptoEngine(),
+                sharedContext.keyManager(),
                 sharedContext.topicPatterns());
     }
 
