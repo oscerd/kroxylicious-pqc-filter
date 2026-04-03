@@ -14,13 +14,18 @@ Consumer <──plaintext── Kroxylicious <──encrypted── Kafka Broker
 
 ## Why PQC for Kafka?
 
-Quantum computers threaten today's public-key cryptography. An adversary can
-**harvest encrypted Kafka traffic now** and decrypt it later once a
-cryptographically relevant quantum computer exists ("harvest now, decrypt later").
+Classical key establishment algorithms (RSA, ECDH) are vulnerable to future
+quantum computers. If per-record encryption keys are established using a
+classical KEM, a quantum adversary could recover those keys from the
+encapsulations stored alongside the ciphertext on the broker.
 
-This plugin protects Kafka record values with NIST-standardized post-quantum
-algorithms so that data at rest on the broker is resistant to both classical
-and quantum attacks.
+This plugin uses ML-KEM (FIPS 203) for quantum-resistant key encapsulation,
+ensuring that data at rest on the Kafka broker cannot be decrypted even by
+an adversary with a cryptographically relevant quantum computer.
+
+**Note:** This filter protects **data at rest on the broker**, not the TLS
+channel in transit. See [THREAT_MODEL.md](THREAT_MODEL.md) for a full
+analysis of what is and is not defended against.
 
 | Standard | Algorithm | Purpose in this plugin |
 |----------|-----------|------------------------|
@@ -499,6 +504,9 @@ The per-message overhead is sub-millisecond. For typical Kafka workloads
 to network and disk I/O.
 
 ## Security Considerations
+
+For a full threat model covering what this filter defends against and what it
+does not, see [THREAT_MODEL.md](THREAT_MODEL.md).
 
 - **Key protection (filesystem)**: The private key file must be readable only
   by the Kroxylicious process. Use filesystem permissions (`chmod 600`).
