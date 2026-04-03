@@ -23,6 +23,8 @@ import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.Path;
 import java.security.GeneralSecurityException;
 import java.security.KeyPair;
+import java.util.Iterator;
+import java.util.ServiceConfigurationError;
 import java.util.ServiceLoader;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -46,7 +48,7 @@ class FileSystemKeyProviderTest {
         Path privKeyPath = tempDir.resolve("priv.der");
         PqcEncryptionConfig config = new PqcEncryptionConfig(
                 KemAlgorithm.ML_KEM_768, false,
-                pubKeyPath.toString(), privKeyPath.toString(), null, null);
+                pubKeyPath.toString(), privKeyPath.toString(), null, null, null);
 
         FileSystemKeyProvider provider = new FileSystemKeyProvider();
 
@@ -72,7 +74,7 @@ class FileSystemKeyProviderTest {
 
         PqcEncryptionConfig config = new PqcEncryptionConfig(
                 KemAlgorithm.ML_KEM_768, false,
-                pubKeyPath.toString(), privKeyPath.toString(), null, null);
+                pubKeyPath.toString(), privKeyPath.toString(), null, null, null);
 
         FileSystemKeyProvider provider = new FileSystemKeyProvider();
 
@@ -100,7 +102,7 @@ class FileSystemKeyProviderTest {
         Path privKeyPath = tempDir.resolve("priv.der");
         PqcEncryptionConfig config = new PqcEncryptionConfig(
                 KemAlgorithm.ML_KEM_768, false,
-                pubKeyPath.toString(), privKeyPath.toString(), null, null);
+                pubKeyPath.toString(), privKeyPath.toString(), null, null, null);
 
         FileSystemKeyProvider provider = new FileSystemKeyProvider();
         provider.configure(config);
@@ -120,7 +122,7 @@ class FileSystemKeyProviderTest {
         Path privKeyPath = tempDir.resolve("priv.der");
         PqcEncryptionConfig config = new PqcEncryptionConfig(
                 KemAlgorithm.ML_KEM_768, false,
-                pubKeyPath.toString(), privKeyPath.toString(), null, null);
+                pubKeyPath.toString(), privKeyPath.toString(), null, null, null);
 
         FileSystemKeyProvider provider = new FileSystemKeyProvider();
         provider.configure(config);
@@ -144,7 +146,7 @@ class FileSystemKeyProviderTest {
     void shouldRejectNullPublicKeyPath() {
         PqcEncryptionConfig config = new PqcEncryptionConfig(
                 KemAlgorithm.ML_KEM_768, false,
-                null, "/tmp/priv.der", null, null);
+                null, "/tmp/priv.der", null, null, null);
 
         FileSystemKeyProvider provider = new FileSystemKeyProvider();
 
@@ -157,7 +159,7 @@ class FileSystemKeyProviderTest {
     void shouldRejectNullPrivateKeyPath() {
         PqcEncryptionConfig config = new PqcEncryptionConfig(
                 KemAlgorithm.ML_KEM_768, false,
-                "/tmp/pub.der", null, null, null);
+                "/tmp/pub.der", null, null, null, null);
 
         FileSystemKeyProvider provider = new FileSystemKeyProvider();
 
@@ -173,7 +175,7 @@ class FileSystemKeyProviderTest {
         Path privKeyPath = tempDir.resolve("priv.der");
         PqcEncryptionConfig config = new PqcEncryptionConfig(
                 KemAlgorithm.ML_KEM_768, false,
-                pubKeyPath.toString(), privKeyPath.toString(), null, null);
+                pubKeyPath.toString(), privKeyPath.toString(), null, null, null);
 
         FileSystemKeyProvider provider = new FileSystemKeyProvider();
         provider.configure(config);
@@ -194,11 +196,18 @@ class FileSystemKeyProviderTest {
     @Test
     void shouldBeDiscoverableViaServiceLoader() {
         ServiceLoader<KeyProvider> loader = ServiceLoader.load(KeyProvider.class);
+        Iterator<KeyProvider> it = loader.iterator();
         boolean found = false;
-        for (KeyProvider provider : loader) {
-            if ("filesystem".equals(provider.type())) {
-                found = true;
-                assertThat(provider).isInstanceOf(FileSystemKeyProvider.class);
+        while (it.hasNext()) {
+            try {
+                KeyProvider provider = it.next();
+                if ("filesystem".equals(provider.type())) {
+                    found = true;
+                    assertThat(provider).isInstanceOf(FileSystemKeyProvider.class);
+                }
+            }
+            catch (ServiceConfigurationError e) {
+                // Skip optional providers not on classpath (e.g., VaultKeyProvider)
             }
         }
         assertThat(found)

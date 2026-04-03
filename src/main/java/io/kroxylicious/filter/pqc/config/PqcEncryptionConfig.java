@@ -19,6 +19,7 @@ import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * Configuration for the PQC Record Encryption filter.
@@ -78,6 +79,7 @@ public class PqcEncryptionConfig {
     private final String privateKeyPath;
     private final List<String> topicPatterns;
     private final String keyProviderType;
+    private final Map<String, String> keyProviderConfig;
 
     @JsonCreator
     public PqcEncryptionConfig(
@@ -86,13 +88,15 @@ public class PqcEncryptionConfig {
             @JsonProperty(value = "publicKeyPath") String publicKeyPath,
             @JsonProperty(value = "privateKeyPath") String privateKeyPath,
             @JsonProperty(value = "topicPatterns") List<String> topicPatterns,
-            @JsonProperty(value = "keyProviderType") String keyProviderType) {
+            @JsonProperty(value = "keyProviderType") String keyProviderType,
+            @JsonProperty(value = "keyProviderConfig") Map<String, String> keyProviderConfig) {
         this.kemAlgorithm = kemAlgorithm != null ? kemAlgorithm : KemAlgorithm.ML_KEM_768;
         this.hybridMode = hybridMode != null ? hybridMode : true;
         this.publicKeyPath = publicKeyPath;
         this.privateKeyPath = privateKeyPath;
         this.topicPatterns = topicPatterns != null ? List.copyOf(topicPatterns) : List.of(".*");
         this.keyProviderType = keyProviderType != null ? keyProviderType : "filesystem";
+        this.keyProviderConfig = keyProviderConfig != null ? Map.copyOf(keyProviderConfig) : Map.of();
     }
 
     public KemAlgorithm getKemAlgorithm() {
@@ -117,5 +121,9 @@ public class PqcEncryptionConfig {
 
     public String getKeyProviderType() {
         return keyProviderType;
+    }
+
+    public Map<String, String> getKeyProviderConfig() {
+        return keyProviderConfig;
     }
 }

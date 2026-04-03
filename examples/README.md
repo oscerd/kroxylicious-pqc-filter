@@ -115,30 +115,39 @@ DEMO 6: Performance Benchmark
 
 ---
 
-## Example 2: Docker Compose (Kafka + Kroxylicious + PQC Filter)
+## Example 2: Docker Compose (Kafka + Kroxylicious + Vault + PQC Filter)
 
-This example runs a full end-to-end setup with a real Kafka broker and
-the Kroxylicious proxy configured with the PQC encryption filter.
+This example runs a full end-to-end setup with a real Kafka broker,
+HashiCorp Vault for key management, and the Kroxylicious proxy configured
+with the PQC encryption filter. ML-KEM key material is stored in Vault
+KV v2 and fetched by the filter at startup.
 
 ### Architecture
 
 ```
-                      ┌───────────────────────────────────────────┐
-                      │              Docker Compose               │
-                      │                                           │
- Producer ──:9192──>  │  Kroxylicious (:9192)  ──:29092──> Kafka  │
- (plaintext)          │    PQC filter encrypts                    │
-                      │                                           │
- Consumer <──:9192──  │  Kroxylicious (:9192)  <──:29092── Kafka  │
- (plaintext)          │    PQC filter decrypts                    │
-                      │                                           │
- Consumer <──:9092──  │                           Kafka (:9092)   │
- (encrypted!)         │                           (direct access) │
-                      └───────────────────────────────────────────┘
+                      ┌──────────────────────────────────────────────────────┐
+                      │                    Docker Compose                    │
+                      │                                                      │
+                      │  Vault (:8200)                                       │
+                      │    KV v2: secret/kroxylicious/pqc                    │
+                      │    (publicKey + privateKey, base64-encoded DER)       │
+                      │        ^                                             │
+                      │        | fetches keys at startup                     │
+                      │        |                                             │
+ Producer ──:9192──>  │  Kroxylicious (:9192)  ──:29092──> Kafka             │
+ (plaintext)          │    PQC filter encrypts                               │
+                      │                                                      │
+ Consumer <──:9192──  │  Kroxylicious (:9192)  <──:29092── Kafka             │
+ (plaintext)          │    PQC filter decrypts                               │
+                      │                                                      │
+ Consumer <──:9092──  │                           Kafka (:9092)              │
+ (encrypted!)         │                           (direct access)            │
+                      └──────────────────────────────────────────────────────┘
 ```
 
 Clients connect to **port 9192** (proxy) and see plaintext.
 Direct access to **port 9092** (broker) shows encrypted binary data.
+Vault UI is accessible at **port 8200** (token: `pqc-demo-token`).
 
 ### Prerequisites
 
@@ -148,11 +157,11 @@ Direct access to **port 9092** (broker) shows encrypted binary data.
 
 ### Step-by-step
 
-#### 1. Build the filter JAR
+#### 1. Build the filter JAR (with Vault support)
 
 ```bash
-# From the project root
-mvn clean package -DskipTests
+# From the project root — the -Pvault profile bundles spring-vault-core
+mvn clean package -Pvault -DskipTests
 ```
 
 #### 2. Generate ML-KEM key pair
@@ -167,6 +176,7 @@ java -cp target/kroxylicious-pqc-filter-1.0.0-SNAPSHOT.jar \
 ```
 
 This creates `pqc-public.der` and `pqc-private.der` in the keys directory.
+These files are used to seed Vault on startup (see step 3).
 
 #### 3. Start the infrastructure
 
@@ -175,14 +185,30 @@ cd examples/docker
 docker compose up -d
 ```
 
-Wait for Kafka to become healthy:
+This starts four services in order:
+1. **Vault** (dev mode) -- ready in ~5 seconds
+2. **vault-init** -- reads the DER key files, base64-encodes them, and stores
+   them in Vault at `secret/kroxylicious/pqc`, then exits
+3. **Kafka** -- KRaft broker (no Zookeeper)
+4. **Kroxylicious** -- starts once Kafka is healthy and Vault keys are seeded
+
+Wait for all services to be ready:
 
 ```bash
-docker compose logs -f kafka
-# Look for: "Kafka Server started"
+docker compose logs -f kroxylicious
+# Look for: "Kroxylicious is started"
 ```
 
-#### 4. Produce messages (encrypted by proxy)
+#### 4. Verify keys in Vault (optional)
+
+```bash
+docker exec pqc-demo-vault vault kv get secret/kroxylicious/pqc
+```
+
+This shows the base64-encoded `publicKey` and `privateKey` fields stored in
+Vault KV v2, along with the secret version number.
+
+#### 5. Produce messages (encrypted by proxy)
 
 ```bash
 cd examples/docker
@@ -193,7 +219,7 @@ mvn compile exec:java \
 
 The producer connects to the proxy at `localhost:9192` and sends 5 sample
 orders containing credit card data. The proxy **encrypts them transparently**
-before storing on the broker.
+using the ML-KEM keys fetched from Vault.
 
 Expected output:
 
@@ -215,7 +241,7 @@ All messages sent successfully!
 Messages are stored PQC-encrypted on the Kafka broker.
 ```
 
-#### 5. Consume through the proxy (decrypted)
+#### 6. Consume through the proxy (decrypted)
 
 ```bash
 mvn compile exec:java \
@@ -241,7 +267,7 @@ Record #2 [partition=0, offset=1]
 ...
 ```
 
-#### 6. Consume directly from broker (encrypted blobs)
+#### 7. Consume directly from broker (encrypted blobs)
 
 ```bash
 mvn compile exec:java \
@@ -268,9 +294,9 @@ Messages appear as encrypted blobs (not readable without the proxy).
 ```
 
 This confirms that data at rest on the Kafka broker is PQC-encrypted and
-unreadable without the ML-KEM private key.
+unreadable without the ML-KEM private key stored in Vault.
 
-#### 7. Clean up
+#### 8. Clean up
 
 ```bash
 docker compose down
@@ -280,8 +306,24 @@ docker compose down
 
 | Service | Image | Port | Purpose |
 |---------|-------|------|---------|
+| `vault` | `hashicorp/vault:1.19` | 8200 | HashiCorp Vault (dev mode) -- stores ML-KEM key material in KV v2 |
+| `vault-init` | `hashicorp/vault:1.19` | -- | Init container: seeds ML-KEM keys into Vault, then exits |
 | `kafka` | `apache/kafka:3.9.0` | 9092 (external), 29092 (internal) | Kafka broker in KRaft mode (no Zookeeper) |
-| `kroxylicious` | `quay.io/kroxylicious/kroxylicious:0.19.0` | 9192 | Proxy with PQC filter |
+| `kroxylicious` | `quay.io/kroxylicious/kroxylicious:0.19.0` | 9192 | Proxy with PQC filter (keys from Vault) |
+
+### How Vault key seeding works
+
+The `vault-init` container runs `config/vault-init.sh`, which:
+
+1. Waits for Vault to be ready
+2. Reads the pre-generated ML-KEM DER key files from `config/pqc-keys/`
+3. Base64-encodes them
+4. Stores them in Vault KV v2 at `secret/kroxylicious/pqc` with fields
+   `publicKey` and `privateKey`
+5. Exits successfully
+
+The Kroxylicious proxy does not start until `vault-init` completes
+(`service_completed_successfully` dependency).
 
 ### Proxy configuration
 
@@ -294,14 +336,23 @@ filterDefinitions:
     config:
       kemAlgorithm: ML_KEM_768
       hybridMode: false
-      publicKeyPath: /opt/kroxylicious/pqc-keys/pqc-public.der
-      privateKeyPath: /opt/kroxylicious/pqc-keys/pqc-private.der
+      keyProviderType: vault
+      keyProviderConfig:
+        vaultAddress: http://vault:8200
+        vaultToken: pqc-demo-token
+        secretPath: kroxylicious/pqc
+        secretEngine: secret
+        authMethod: token
       topicPatterns:
         - "sensitive-.*"
 
 defaultFilters:
   - pqc-encryption
 ```
+
+The filter uses `keyProviderType: vault` to fetch ML-KEM keys from Vault
+instead of reading DER files from disk. The `keyProviderConfig` map
+specifies the Vault connection details.
 
 Only topics matching `sensitive-.*` are encrypted. Other topics pass through
 unchanged.
@@ -310,6 +361,33 @@ The filter JAR is loaded via the `KROXYLICIOUS_CLASSPATH` environment variable
 set in `docker-compose.yaml`. This tells the Kroxylicious start script to add
 `/opt/kroxylicious/plugins/*` to the Java classpath so the `ServiceLoader` can
 discover the `PqcRecordEncryptionFilterFactory`.
+
+### Vault key provider configuration
+
+| Property | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `vaultAddress` | Yes | `VAULT_ADDR` env | Vault server URL |
+| `vaultToken` | No | `VAULT_TOKEN` env | Token for `token` auth method |
+| `secretPath` | Yes | -- | Path within the secrets engine (e.g., `kroxylicious/pqc`) |
+| `secretEngine` | No | `secret` | KV v2 secrets engine mount |
+| `authMethod` | No | `token` | One of: `token`, `approle`, `kubernetes` |
+| `roleId` | For `approle` | -- | AppRole role ID |
+| `secretId` | For `approle` | -- | AppRole secret ID |
+| `kubeRole` | For `kubernetes` | -- | Kubernetes auth role |
+| `kubeTokenPath` | No | `/var/run/secrets/.../token` | Service account token path |
+
+### Vault secret format
+
+The Vault KV v2 secret must contain two fields:
+
+| Field | Format | Description |
+|-------|--------|-------------|
+| `publicKey` | Base64-encoded X.509 DER | ML-KEM public key |
+| `privateKey` | Base64-encoded PKCS#8 DER | ML-KEM private key |
+
+Secret versions map to key IDs. The filter uses the latest version as the
+active encryption key and can decrypt records encrypted with older versions
+by fetching the corresponding Vault secret version.
 
 ---
 
@@ -371,6 +449,34 @@ consumer.
 The filter JAR is not on the Kroxylicious classpath. Verify the Docker
 volume mount in `docker-compose.yaml` points to the built JAR.
 
+**`No KeyProvider found for type 'vault'`**
+The filter JAR was built without Vault support. Rebuild with:
+```bash
+mvn clean package -Pvault -DskipTests
+```
+
+**`vault-init` container fails or restarts**
+The Vault server may not be ready. Check Vault health:
+```bash
+docker compose logs vault
+docker exec pqc-demo-vault vault status
+```
+
+**`Vault secret missing 'publicKey' field`**
+The keys were not seeded into Vault. Re-run the init container:
+```bash
+docker compose run --rm vault-init
+```
+Or seed manually:
+```bash
+docker exec pqc-demo-vault vault kv put secret/kroxylicious/pqc \
+  publicKey="$(base64 -w 0 config/pqc-keys/pqc-public.der)" \
+  privateKey="$(base64 -w 0 config/pqc-keys/pqc-private.der)"
+```
+
 **`Failed to initialize PQC encryption`**
-The key files are missing or unreadable. Regenerate them with
-`PqcKeyGeneratorCli` and verify the paths in `proxy-config.yaml`.
+Check that the Vault address is reachable from the Kroxylicious container
+and that the token is correct. Verify with:
+```bash
+docker exec pqc-demo-proxy curl -s http://vault:8200/v1/sys/health
+```

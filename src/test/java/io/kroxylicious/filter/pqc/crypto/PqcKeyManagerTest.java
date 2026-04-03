@@ -38,7 +38,7 @@ class PqcKeyManagerTest {
         Path privKeyPath = tempDir.resolve("priv.der");
         PqcEncryptionConfig config = new PqcEncryptionConfig(
                 KemAlgorithm.ML_KEM_768, false,
-                pubKeyPath.toString(), privKeyPath.toString(), null, null);
+                pubKeyPath.toString(), privKeyPath.toString(), null, null, null);
 
         // When
         PqcKeyManager keyManager = new PqcKeyManager(config);
@@ -61,7 +61,7 @@ class PqcKeyManagerTest {
 
         PqcEncryptionConfig config = new PqcEncryptionConfig(
                 KemAlgorithm.ML_KEM_768, false,
-                pubKeyPath.toString(), privKeyPath.toString(), null, null);
+                pubKeyPath.toString(), privKeyPath.toString(), null, null, null);
 
         // When
         PqcKeyManager keyManager = new PqcKeyManager(config);
@@ -81,7 +81,7 @@ class PqcKeyManagerTest {
         Path privKeyPath = tempDir.resolve("priv.der");
         PqcEncryptionConfig config = new PqcEncryptionConfig(
                 KemAlgorithm.ML_KEM_768, false,
-                pubKeyPath.toString(), privKeyPath.toString(), null, null);
+                pubKeyPath.toString(), privKeyPath.toString(), null, null, null);
 
         PqcKeyManager keyManager = new PqcKeyManager(config);
 
@@ -99,7 +99,7 @@ class PqcKeyManagerTest {
     void shouldRejectUnknownKeyProviderType() {
         PqcEncryptionConfig config = new PqcEncryptionConfig(
                 KemAlgorithm.ML_KEM_768, false,
-                "/tmp/pub.der", "/tmp/priv.der", null, "nonexistent");
+                "/tmp/pub.der", "/tmp/priv.der", null, "nonexistent", null);
 
         assertThatThrownBy(() -> new PqcKeyManager(config))
                 .isInstanceOf(IllegalArgumentException.class)
@@ -113,7 +113,7 @@ class PqcKeyManagerTest {
         Path privKeyPath = tempDir.resolve("priv.der");
         PqcEncryptionConfig config = new PqcEncryptionConfig(
                 KemAlgorithm.ML_KEM_768, false,
-                pubKeyPath.toString(), privKeyPath.toString(), null, null);
+                pubKeyPath.toString(), privKeyPath.toString(), null, null, null);
 
         // When
         PqcKeyManager keyManager = new PqcKeyManager(config);
@@ -129,7 +129,7 @@ class PqcKeyManagerTest {
         Path privKeyPath = tempDir.resolve("priv.der");
         PqcEncryptionConfig config = new PqcEncryptionConfig(
                 KemAlgorithm.ML_KEM_768, false,
-                pubKeyPath.toString(), privKeyPath.toString(), null, "filesystem");
+                pubKeyPath.toString(), privKeyPath.toString(), null, "filesystem", null);
 
         // When
         PqcKeyManager keyManager = new PqcKeyManager(config);

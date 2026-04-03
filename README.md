@@ -39,6 +39,7 @@ and quantum attacks.
 - **Semantic security** - identical plaintexts produce different ciphertexts (IND-CCA2)
 - **Key auto-generation** - generates and saves ML-KEM keys on first startup if absent
 - **`x-pqc-encrypted` header** - marks encrypted records for downstream awareness
+- **Pluggable key providers** - `KeyProvider` SPI supports filesystem (default) and HashiCorp Vault backends
 
 ## Prerequisites
 
@@ -61,6 +62,14 @@ mvn clean package -DskipTests
 
 The shaded JAR at `target/kroxylicious-pqc-filter-1.0.0-SNAPSHOT.jar` bundles
 Bouncy Castle so it can be dropped into Kroxylicious with no extra dependencies.
+
+To include HashiCorp Vault key provider support, build with the `vault` profile:
+
+```bash
+mvn clean package -Pvault -DskipTests
+```
+
+This bundles `spring-vault-core` and the `VaultKeyProvider` into the JAR.
 
 ### 2. Generate ML-KEM keys
 
@@ -132,9 +141,54 @@ instead of the broker directly.
 |----------|------|----------|---------|-------------|
 | `kemAlgorithm` | enum | No | `ML_KEM_768` | ML-KEM parameter set. One of `ML_KEM_512`, `ML_KEM_768`, `ML_KEM_1024`. |
 | `hybridMode` | boolean | No | `true` | Combine ML-KEM with X25519 ECDH for defense-in-depth. |
-| `publicKeyPath` | string | **Yes** | - | Filesystem path to the ML-KEM public key (X.509 DER encoded). |
-| `privateKeyPath` | string | **Yes** | - | Filesystem path to the ML-KEM private key (PKCS#8 DER encoded). |
+| `publicKeyPath` | string | Filesystem only | - | Filesystem path to the ML-KEM public key (X.509 DER encoded). |
+| `privateKeyPath` | string | Filesystem only | - | Filesystem path to the ML-KEM private key (PKCS#8 DER encoded). |
 | `topicPatterns` | list\<string\> | No | `[".*"]` | Java regex patterns. Only records in matching topics are encrypted/decrypted. |
+| `keyProviderType` | string | No | `filesystem` | Key storage backend. One of `filesystem`, `vault`. |
+| `keyProviderConfig` | map\<string, string\> | Vault only | `{}` | Backend-specific configuration (see Vault section below). |
+
+### Key Providers
+
+**Filesystem** (`keyProviderType: filesystem`, default):
+Loads ML-KEM keys from DER files on disk. If the files do not exist, generates
+a fresh key pair and saves them. Requires `publicKeyPath` and `privateKeyPath`.
+
+**HashiCorp Vault** (`keyProviderType: vault`, requires `-Pvault` build):
+Fetches ML-KEM keys from a Vault KV v2 secrets engine. Keys are stored as
+base64-encoded DER in `publicKey` and `privateKey` fields. Vault secret versions
+map to key IDs for key rotation support.
+
+Vault `keyProviderConfig` properties:
+
+| Property | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `vaultAddress` | Yes | `VAULT_ADDR` env | Vault server URL (e.g., `http://vault:8200`) |
+| `vaultToken` | For `token` auth | `VAULT_TOKEN` env | Vault authentication token |
+| `secretPath` | Yes | -- | Path within the secrets engine (e.g., `kroxylicious/pqc`) |
+| `secretEngine` | No | `secret` | KV v2 secrets engine mount name |
+| `authMethod` | No | `token` | Auth method: `token`, `approle`, or `kubernetes` |
+| `roleId` | For `approle` | -- | AppRole role ID |
+| `secretId` | For `approle` | -- | AppRole secret ID |
+| `kubeRole` | For `kubernetes` | -- | Kubernetes auth role name |
+| `kubeTokenPath` | No | `/var/run/secrets/.../token` | Service account token file path |
+
+Example Vault configuration:
+
+```yaml
+filterDefinitions:
+  - name: pqc-encryption
+    type: PqcRecordEncryptionFilterFactory
+    config:
+      kemAlgorithm: ML_KEM_768
+      hybridMode: false
+      keyProviderType: vault
+      keyProviderConfig:
+        vaultAddress: http://vault:8200
+        vaultToken: my-token
+        secretPath: kroxylicious/pqc
+      topicPatterns:
+        - "sensitive-.*"
+```
 
 ### ML-KEM Parameter Sets
 
@@ -189,15 +243,25 @@ kroxylicious-pqc-filter/
     config/
       PqcEncryptionConfig.java              # Jackson-deserialized configuration POJO
     crypto/
+      KeyProvider.java                      # SPI interface for pluggable key backends
+      FileSystemKeyProvider.java            # Default: loads/generates keys from disk
       PqcCryptoEngine.java                  # ML-KEM encapsulation + AES-256-GCM
-      PqcKeyManager.java                    # Key loading, generation, persistence
+      PqcKeyManager.java                    # Resolves KeyProvider via ServiceLoader
+  src/main/java-vault/                      # (vault profile only)
+    .../crypto/
+      VaultKeyProvider.java                 # HashiCorp Vault KV v2 key provider
   src/main/resources/
     META-INF/services/
-      io.kroxylicious.proxy.filter.FilterFactory   # ServiceLoader registration
-  src/test/java/...                                # Unit tests (22 tests)
+      io.kroxylicious.proxy.filter.FilterFactory   # ServiceLoader: filter registration
+      io.kroxylicious.filter.pqc.crypto.KeyProvider # ServiceLoader: key provider
+  src/main/resources-vault/                 # (vault profile only)
+    META-INF/services/
+      io.kroxylicious.filter.pqc.crypto.KeyProvider # Registers both FS + Vault providers
+  src/test/java/...                                # Unit tests (49 tests)
+  src/test/java-vault/...                          # Vault provider tests (17 tests)
   examples/
     standalone/                             # Runs without Kafka (crypto engine demo)
-    docker/                                 # Docker Compose: Kafka + Kroxylicious + filter
+    docker/                                 # Docker Compose: Kafka + Vault + Kroxylicious
 ```
 
 ### Filter Lifecycle
@@ -257,12 +321,16 @@ Stateless except for key material and `SecureRandom`.
 `encrypt()` returns a self-describing envelope; `decrypt()` parses it.
 Registers Bouncy Castle providers (`BC`, `BCPQC`) in a static initializer.
 
-**`PqcKeyManager`** loads DER-encoded keys from disk.
-If key files do not exist, generates a fresh ML-KEM key pair and saves them.
+**`PqcKeyManager`** resolves a `KeyProvider` via `ServiceLoader`, matching by
+`keyProviderType`. Delegates all key operations to the resolved provider.
+
+**`KeyProvider`** is the SPI interface for pluggable key storage backends.
+Implementations are discovered via `META-INF/services`. Built-in providers:
+`FileSystemKeyProvider` (default) and `VaultKeyProvider` (with `-Pvault`).
 
 **`PqcEncryptionConfig`** is a Jackson-annotated POJO.
 Deserialized from the `config:` block in the Kroxylicious proxy YAML.
-All fields except `publicKeyPath` and `privateKeyPath` have defaults.
+Supports `keyProviderType` and `keyProviderConfig` for backend selection.
 
 ## Building and Testing
 
@@ -270,11 +338,14 @@ All fields except `publicKeyPath` and `privateKeyPath` have defaults.
 # Compile
 mvn compile
 
-# Run unit tests (22 tests)
+# Run unit tests (38 core tests)
 mvn test
 
 # Package (creates shaded JAR with Bouncy Castle bundled)
 mvn package
+
+# Build with Vault support (55 tests: 38 core + 17 vault)
+mvn package -Pvault
 
 # Install to local Maven repository
 mvn install
@@ -285,8 +356,12 @@ mvn install
 | Test Class | Tests | What is verified |
 |------------|------:|------------------|
 | `PqcCryptoEngineTest` | 12 | Encrypt/decrypt roundtrip for all 3 ML-KEM variants, null handling, empty and 1MB payloads, semantic security, tamper detection, invalid version rejection, key generation, envelope version bytes |
-| `PqcEncryptionConfigTest` | 7 | Default values, explicit values, null rejection, JSON deserialization, immutability, enum properties |
-| `PqcKeyManagerTest` | 3 | Key auto-generation, loading existing keys, engine creation from key manager |
+| `PqcEncryptionConfigTest` | 9 | Default values, explicit values, null rejection, JSON deserialization, immutability, enum properties, keyProviderConfig deserialization |
+| `PqcKeyManagerTest` | 6 | KeyProvider resolution, engine creation, delegation to providers, fallback for filesystem type |
+| `FileSystemKeyProviderTest` | 11 | Key generation, loading existing keys, default key ID, unknown key ID rejection, null path validation, ServiceLoader discovery, crypto roundtrip |
+| `VaultKeyProviderTest` | 17 | Config validation (missing path/address/token/approle/kube), key fetch from Vault, versioned key retrieval, cached keys, invalid versions, missing fields in secret, crypto roundtrip, close behavior |
+
+Total: **55 tests** (38 core + 17 vault)
 
 ## Dependencies
 
@@ -300,6 +375,7 @@ mvn install
 | `org.bouncycastle:bcprov-jdk18on` | 1.83 | compile | ML-KEM, AES-GCM, X25519 (bundled in shaded JAR) |
 | `org.bouncycastle:bcutil-jdk18on` | 1.83 | compile | Bouncy Castle utilities (bundled in shaded JAR) |
 | `org.slf4j:slf4j-api` | 2.0.17 | provided | Logging |
+| `org.springframework.vault:spring-vault-core` | 3.1.2 | compile (vault profile) | Vault KV v2 client (bundled when built with `-Pvault`) |
 
 ### Test
 
@@ -321,11 +397,13 @@ to network and disk I/O.
 
 ## Security Considerations
 
-- **Key protection**: The private key file must be readable only by the
-  Kroxylicious process. Use filesystem permissions (`chmod 600`) and
-  consider mounting from a secrets manager or HSM.
-- **Key rotation**: Generate a new key pair periodically. The version byte
-  in the envelope allows future support for key ID headers.
+- **Key protection (filesystem)**: The private key file must be readable only
+  by the Kroxylicious process. Use filesystem permissions (`chmod 600`).
+- **Key protection (Vault)**: Use Vault policies to restrict access to the
+  secret path. Prefer `approle` or `kubernetes` auth over static tokens
+  in production. Never commit Vault tokens to version control.
+- **Key rotation**: The Vault key provider supports key versioning via Vault
+  secret versions. New versions encrypt; old versions can still decrypt.
 - **Tombstones**: Records with `null` values (Kafka tombstones) are passed
   through unencrypted.
 - **Headers**: Record headers are **not** encrypted, only values.

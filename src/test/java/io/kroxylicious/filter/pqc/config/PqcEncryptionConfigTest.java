@@ -20,6 +20,7 @@ import io.kroxylicious.filter.pqc.config.PqcEncryptionConfig.KemAlgorithm;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -29,13 +30,14 @@ class PqcEncryptionConfigTest {
     void shouldUseDefaultValues() {
         // When
         PqcEncryptionConfig config = new PqcEncryptionConfig(
-                null, null, "/tmp/pub.key", "/tmp/priv.key", null, null);
+                null, null, "/tmp/pub.key", "/tmp/priv.key", null, null, null);
 
         // Then
         assertThat(config.getKemAlgorithm()).isEqualTo(KemAlgorithm.ML_KEM_768);
         assertThat(config.isHybridMode()).isTrue();
         assertThat(config.getTopicPatterns()).containsExactly(".*");
         assertThat(config.getKeyProviderType()).isEqualTo("filesystem");
+        assertThat(config.getKeyProviderConfig()).isEmpty();
     }
 
     @Test
@@ -44,7 +46,7 @@ class PqcEncryptionConfigTest {
         PqcEncryptionConfig config = new PqcEncryptionConfig(
                 KemAlgorithm.ML_KEM_1024, false,
                 "/etc/pqc/pub.key", "/etc/pqc/priv.key",
-                List.of("sensitive-.*", "pii-data"), "filesystem");
+                List.of("sensitive-.*", "pii-data"), "filesystem", null);
 
         // Then
         assertThat(config.getKemAlgorithm()).isEqualTo(KemAlgorithm.ML_KEM_1024);
@@ -60,7 +62,7 @@ class PqcEncryptionConfigTest {
         // Key path validation is now handled by the KeyProvider, not the config.
         // A non-filesystem provider may not need key paths at all.
         PqcEncryptionConfig config = new PqcEncryptionConfig(
-                null, null, null, null, null, "vault");
+                null, null, null, null, null, "vault", null);
 
         assertThat(config.getPublicKeyPath()).isNull();
         assertThat(config.getPrivateKeyPath()).isNull();
@@ -113,11 +115,48 @@ class PqcEncryptionConfigTest {
     }
 
     @Test
+    void shouldDeserializeKeyProviderConfigFromJson() throws Exception {
+        // Given
+        String json = """
+                {
+                    "keyProviderType": "vault",
+                    "keyProviderConfig": {
+                        "vaultAddress": "https://vault.example.com:8200",
+                        "secretPath": "kroxylicious/pqc",
+                        "authMethod": "token",
+                        "vaultToken": "hvs.test"
+                    }
+                }
+                """;
+
+        // When
+        ObjectMapper mapper = new ObjectMapper();
+        PqcEncryptionConfig config = mapper.readValue(json, PqcEncryptionConfig.class);
+
+        // Then
+        assertThat(config.getKeyProviderType()).isEqualTo("vault");
+        assertThat(config.getKeyProviderConfig())
+                .containsEntry("vaultAddress", "https://vault.example.com:8200")
+                .containsEntry("secretPath", "kroxylicious/pqc")
+                .containsEntry("authMethod", "token")
+                .containsEntry("vaultToken", "hvs.test");
+    }
+
+    @Test
+    void shouldMakeKeyProviderConfigImmutable() {
+        PqcEncryptionConfig config = new PqcEncryptionConfig(
+                null, null, null, null, null, "vault",
+                Map.of("key", "value"));
+
+        assertThat(config.getKeyProviderConfig()).isUnmodifiable();
+    }
+
+    @Test
     void shouldMakeTopicPatternsImmutable() {
         // Given
         PqcEncryptionConfig config = new PqcEncryptionConfig(
                 null, null, "/tmp/pub.key", "/tmp/priv.key",
-                List.of("topic1", "topic2"), null);
+                List.of("topic1", "topic2"), null, null);
 
         // Then
         assertThat(config.getTopicPatterns()).isUnmodifiable();

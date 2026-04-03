@@ -1,5 +1,5 @@
 # =============================================================================
-# Kroxylicious Proxy Configuration for PQC Demo
+# Kroxylicious Proxy Configuration for PQC Demo (Vault-backed keys)
 # =============================================================================
 
 management:
@@ -23,8 +23,13 @@ filterDefinitions:
     config:
       kemAlgorithm: ML_KEM_768
       hybridMode: false
-      publicKeyPath: /opt/kroxylicious/pqc-keys/pqc-public.der
-      privateKeyPath: /opt/kroxylicious/pqc-keys/pqc-private.der
+      keyProviderType: vault
+      keyProviderConfig:
+        vaultAddress: http://vault:8200
+        vaultToken: pqc-demo-token
+        secretPath: kroxylicious/pqc
+        secretEngine: secret
+        authMethod: token
       topicPatterns:
         - "sensitive-.*"
 
