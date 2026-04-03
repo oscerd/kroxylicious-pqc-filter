@@ -68,7 +68,8 @@ public class PqcKeyManager {
      */
     public PqcCryptoEngine createEngine(boolean hybridMode) throws GeneralSecurityException {
         KeyPair keyPair = keyProvider.getActiveKeyPair(algorithm);
-        return new PqcCryptoEngine(algorithm, hybridMode, keyPair.getPublic(), keyPair.getPrivate());
+        KeyPair x25519KeyPair = hybridMode ? keyProvider.getX25519KeyPair() : null;
+        return new PqcCryptoEngine(algorithm, hybridMode, keyPair.getPublic(), keyPair.getPrivate(), x25519KeyPair);
     }
 
     /**

@@ -104,6 +104,12 @@ public class PqcCryptoEngine {
 
     public PqcCryptoEngine(KemAlgorithm kemAlgorithm, boolean hybridMode,
                            PublicKey mlKemPublicKey, PrivateKey mlKemPrivateKey) {
+        this(kemAlgorithm, hybridMode, mlKemPublicKey, mlKemPrivateKey, null);
+    }
+
+    public PqcCryptoEngine(KemAlgorithm kemAlgorithm, boolean hybridMode,
+                           PublicKey mlKemPublicKey, PrivateKey mlKemPrivateKey,
+                           KeyPair x25519KeyPair) {
         this.kemAlgorithm = kemAlgorithm;
         this.hybridMode = hybridMode;
         this.mlKemPublicKey = mlKemPublicKey;
@@ -111,14 +117,19 @@ public class PqcCryptoEngine {
         this.secureRandom = new SecureRandom();
 
         if (hybridMode) {
-            try {
-                KeyPairGenerator x25519Gen = KeyPairGenerator.getInstance("X25519");
-                KeyPair staticKp = x25519Gen.generateKeyPair();
-                this.x25519StaticPublicKey = staticKp.getPublic();
-                this.x25519StaticPrivateKey = staticKp.getPrivate();
+            if (x25519KeyPair != null) {
+                this.x25519StaticPublicKey = x25519KeyPair.getPublic();
+                this.x25519StaticPrivateKey = x25519KeyPair.getPrivate();
             }
-            catch (GeneralSecurityException e) {
-                throw new IllegalStateException("Failed to generate X25519 static key pair for hybrid mode", e);
+            else {
+                try {
+                    KeyPair generated = generateX25519KeyPair();
+                    this.x25519StaticPublicKey = generated.getPublic();
+                    this.x25519StaticPrivateKey = generated.getPrivate();
+                }
+                catch (GeneralSecurityException e) {
+                    throw new IllegalStateException("Failed to generate X25519 static key pair for hybrid mode", e);
+                }
             }
         }
         else {
@@ -286,6 +297,32 @@ public class PqcCryptoEngine {
     public static void saveKey(Path path, byte[] encodedKey) throws IOException {
         Files.createDirectories(path.getParent());
         Files.write(path, encodedKey);
+    }
+
+    /**
+     * Generate a new X25519 key pair for hybrid mode.
+     */
+    public static KeyPair generateX25519KeyPair() throws GeneralSecurityException {
+        KeyPairGenerator kpg = KeyPairGenerator.getInstance("X25519");
+        return kpg.generateKeyPair();
+    }
+
+    /**
+     * Load an X25519 public key from a file (X.509 DER encoded).
+     */
+    public static PublicKey loadX25519PublicKey(Path path) throws GeneralSecurityException, IOException {
+        byte[] keyBytes = Files.readAllBytes(path);
+        KeyFactory kf = KeyFactory.getInstance("X25519");
+        return kf.generatePublic(new X509EncodedKeySpec(keyBytes));
+    }
+
+    /**
+     * Load an X25519 private key from a file (PKCS#8 DER encoded).
+     */
+    public static PrivateKey loadX25519PrivateKey(Path path) throws GeneralSecurityException, IOException {
+        byte[] keyBytes = Files.readAllBytes(path);
+        KeyFactory kf = KeyFactory.getInstance("X25519");
+        return kf.generatePrivate(new PKCS8EncodedKeySpec(keyBytes));
     }
 
     // --- Internal helpers ---

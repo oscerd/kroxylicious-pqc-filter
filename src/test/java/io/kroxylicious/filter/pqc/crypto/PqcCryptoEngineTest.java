@@ -226,6 +226,28 @@ class PqcCryptoEngineTest {
     }
 
     @Test
+    void shouldDecryptWithProvidedX25519KeyPairAcrossEngineInstances() throws Exception {
+        // Given - encrypt with engine1 using a persisted X25519 key pair
+        KeyPair mlKemKeyPair = PqcCryptoEngine.generateKeyPair(KemAlgorithm.ML_KEM_768);
+        KeyPair x25519KeyPair = PqcCryptoEngine.generateX25519KeyPair();
+
+        PqcCryptoEngine engine1 = new PqcCryptoEngine(
+                KemAlgorithm.ML_KEM_768, true,
+                mlKemKeyPair.getPublic(), mlKemKeyPair.getPrivate(), x25519KeyPair);
+        byte[] plaintext = "cross-restart test".getBytes(StandardCharsets.UTF_8);
+        byte[] encrypted = engine1.encrypt(plaintext);
+
+        // When - decrypt with engine2 using the same X25519 key pair (simulates restart)
+        PqcCryptoEngine engine2 = new PqcCryptoEngine(
+                KemAlgorithm.ML_KEM_768, true,
+                mlKemKeyPair.getPublic(), mlKemKeyPair.getPrivate(), x25519KeyPair);
+        byte[] decrypted = engine2.decrypt(encrypted);
+
+        // Then
+        assertThat(decrypted).isEqualTo(plaintext);
+    }
+
+    @Test
     void hybridModeShouldProduceLargerEnvelopeThanPqcOnly() throws Exception {
         // Given
         KeyPair keyPair = PqcCryptoEngine.generateKeyPair(KemAlgorithm.ML_KEM_768);

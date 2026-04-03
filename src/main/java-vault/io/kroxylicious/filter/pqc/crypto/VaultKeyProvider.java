@@ -39,6 +39,7 @@ import java.nio.file.Path;
 import java.security.GeneralSecurityException;
 import java.security.KeyFactory;
 import java.security.KeyPair;
+import java.security.KeyPairGenerator;
 import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.security.Security;
@@ -101,6 +102,7 @@ public class VaultKeyProvider implements KeyProvider {
     private String secretPath;
     private PublicKey publicKey;
     private PrivateKey privateKey;
+    private KeyPair x25519KeyPair;
     private String activeVersion;
 
     static {
@@ -178,6 +180,11 @@ public class VaultKeyProvider implements KeyProvider {
     }
 
     @Override
+    public KeyPair getX25519KeyPair() {
+        return x25519KeyPair;
+    }
+
+    @Override
     public List<String> listKeyIds() {
         if (activeVersion == null) {
             return List.of();
@@ -189,6 +196,7 @@ public class VaultKeyProvider implements KeyProvider {
     public void close() {
         this.publicKey = null;
         this.privateKey = null;
+        this.x25519KeyPair = null;
         this.vaultTemplate = null;
     }
 
@@ -210,7 +218,13 @@ public class VaultKeyProvider implements KeyProvider {
         this.publicKey = decodePublicKey(data);
         this.privateKey = decodePrivateKey(data);
 
-        LOG.info("Loaded ML-KEM key pair from Vault (version={})", activeVersion);
+        this.x25519KeyPair = decodeX25519KeyPair(data);
+        if (x25519KeyPair != null) {
+            LOG.info("Loaded ML-KEM + X25519 key pairs from Vault (version={})", activeVersion);
+        }
+        else {
+            LOG.info("Loaded ML-KEM key pair from Vault (version={}), no X25519 keys found", activeVersion);
+        }
     }
 
     private KeyPair fetchKeysByVersion(int version) throws GeneralSecurityException, IOException {
@@ -302,6 +316,20 @@ public class VaultKeyProvider implements KeyProvider {
         byte[] keyBytes = Base64.getDecoder().decode(raw.toString());
         KeyFactory kf = KeyFactory.getInstance("Kyber", "BCPQC");
         return kf.generatePrivate(new PKCS8EncodedKeySpec(keyBytes));
+    }
+
+    private static KeyPair decodeX25519KeyPair(Map<String, Object> data) throws GeneralSecurityException {
+        Object rawPub = data.get("x25519PublicKey");
+        Object rawPriv = data.get("x25519PrivateKey");
+        if (rawPub == null || rawPriv == null) {
+            return null;
+        }
+        KeyFactory kf = KeyFactory.getInstance("X25519");
+        PublicKey pub = kf.generatePublic(
+                new X509EncodedKeySpec(Base64.getDecoder().decode(rawPub.toString())));
+        PrivateKey priv = kf.generatePrivate(
+                new PKCS8EncodedKeySpec(Base64.getDecoder().decode(rawPriv.toString())));
+        return new KeyPair(pub, priv);
     }
 
     private static String getOrEnv(Map<String, String> props, String key, String envVar) {

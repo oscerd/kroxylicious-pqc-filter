@@ -194,6 +194,108 @@ class FileSystemKeyProviderTest {
     }
 
     @Test
+    void shouldGenerateX25519KeysWhenHybridModeEnabled() throws Exception {
+        // Given
+        Path pubKeyPath = tempDir.resolve("pub.der");
+        Path privKeyPath = tempDir.resolve("priv.der");
+        PqcEncryptionConfig config = new PqcEncryptionConfig(
+                KemAlgorithm.ML_KEM_768, true,
+                pubKeyPath.toString(), privKeyPath.toString(), null, null, null);
+
+        FileSystemKeyProvider provider = new FileSystemKeyProvider();
+
+        // When
+        provider.configure(config);
+
+        // Then
+        assertThat(tempDir.resolve("x25519-public.der")).exists();
+        assertThat(tempDir.resolve("x25519-private.der")).exists();
+        assertThat(provider.getX25519KeyPair()).isNotNull();
+        assertThat(provider.getX25519KeyPair().getPublic()).isNotNull();
+        assertThat(provider.getX25519KeyPair().getPrivate()).isNotNull();
+    }
+
+    @Test
+    void shouldLoadExistingX25519Keys() throws Exception {
+        // Given - generate and save keys first
+        Path pubKeyPath = tempDir.resolve("pub.der");
+        Path privKeyPath = tempDir.resolve("priv.der");
+        PqcEncryptionConfig config1 = new PqcEncryptionConfig(
+                KemAlgorithm.ML_KEM_768, true,
+                pubKeyPath.toString(), privKeyPath.toString(), null, null, null);
+
+        FileSystemKeyProvider provider1 = new FileSystemKeyProvider();
+        provider1.configure(config1);
+        KeyPair originalX25519 = provider1.getX25519KeyPair();
+
+        // When - load with a fresh provider
+        PqcEncryptionConfig config2 = new PqcEncryptionConfig(
+                KemAlgorithm.ML_KEM_768, true,
+                pubKeyPath.toString(), privKeyPath.toString(), null, null, null);
+        FileSystemKeyProvider provider2 = new FileSystemKeyProvider();
+        provider2.configure(config2);
+
+        // Then - same X25519 keys loaded
+        assertThat(provider2.getX25519KeyPair().getPublic().getEncoded())
+                .isEqualTo(originalX25519.getPublic().getEncoded());
+        assertThat(provider2.getX25519KeyPair().getPrivate().getEncoded())
+                .isEqualTo(originalX25519.getPrivate().getEncoded());
+    }
+
+    @Test
+    void shouldNotGenerateX25519KeysWhenHybridModeDisabled() throws Exception {
+        // Given
+        Path pubKeyPath = tempDir.resolve("pub.der");
+        Path privKeyPath = tempDir.resolve("priv.der");
+        PqcEncryptionConfig config = new PqcEncryptionConfig(
+                KemAlgorithm.ML_KEM_768, false,
+                pubKeyPath.toString(), privKeyPath.toString(), null, null, null);
+
+        FileSystemKeyProvider provider = new FileSystemKeyProvider();
+
+        // When
+        provider.configure(config);
+
+        // Then
+        assertThat(tempDir.resolve("x25519-public.der")).doesNotExist();
+        assertThat(tempDir.resolve("x25519-private.der")).doesNotExist();
+        assertThat(provider.getX25519KeyPair()).isNull();
+    }
+
+    @Test
+    void shouldProduceWorkingHybridCryptoWithPersistedX25519Keys() throws Exception {
+        // Given - first provider generates keys
+        Path pubKeyPath = tempDir.resolve("pub.der");
+        Path privKeyPath = tempDir.resolve("priv.der");
+        PqcEncryptionConfig config = new PqcEncryptionConfig(
+                KemAlgorithm.ML_KEM_768, true,
+                pubKeyPath.toString(), privKeyPath.toString(), null, null, null);
+
+        FileSystemKeyProvider provider1 = new FileSystemKeyProvider();
+        provider1.configure(config);
+        KeyPair mlKem1 = provider1.getActiveKeyPair(KemAlgorithm.ML_KEM_768);
+        PqcCryptoEngine engine1 = new PqcCryptoEngine(
+                KemAlgorithm.ML_KEM_768, true, mlKem1.getPublic(), mlKem1.getPrivate(),
+                provider1.getX25519KeyPair());
+
+        byte[] plaintext = "cross-restart hybrid test".getBytes();
+        byte[] encrypted = engine1.encrypt(plaintext);
+
+        // When - second provider loads the same keys (simulates restart)
+        FileSystemKeyProvider provider2 = new FileSystemKeyProvider();
+        provider2.configure(config);
+        KeyPair mlKem2 = provider2.getActiveKeyPair(KemAlgorithm.ML_KEM_768);
+        PqcCryptoEngine engine2 = new PqcCryptoEngine(
+                KemAlgorithm.ML_KEM_768, true, mlKem2.getPublic(), mlKem2.getPrivate(),
+                provider2.getX25519KeyPair());
+
+        byte[] decrypted = engine2.decrypt(encrypted);
+
+        // Then
+        assertThat(decrypted).isEqualTo(plaintext);
+    }
+
+    @Test
     void shouldBeDiscoverableViaServiceLoader() {
         ServiceLoader<KeyProvider> loader = ServiceLoader.load(KeyProvider.class);
         Iterator<KeyProvider> it = loader.iterator();

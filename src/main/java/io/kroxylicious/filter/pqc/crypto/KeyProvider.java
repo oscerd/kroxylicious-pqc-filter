@@ -86,6 +86,17 @@ public interface KeyProvider {
     List<String> listKeyIds();
 
     /**
+     * Return the X25519 static key pair for hybrid mode, if available.
+     * Providers that support hybrid mode persistence should override this
+     * method to return a persisted X25519 key pair.
+     *
+     * @return the X25519 key pair, or {@code null} if not available
+     */
+    default KeyPair getX25519KeyPair() {
+        return null;
+    }
+
+    /**
      * Release any resources held by this provider.
      * Called when the filter is shut down.
      */
