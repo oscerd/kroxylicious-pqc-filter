@@ -22,9 +22,10 @@ requiring a running Kafka cluster or Kroxylicious proxy.
 ### How to run
 
 ```bash
-# From the project root
-cd examples/standalone
+# From the project root — install the filter JAR to the local Maven repo first
+mvn install -DskipTests
 
+cd examples/standalone
 mvn compile exec:java
 ```
 
@@ -175,8 +176,10 @@ java -cp target/kroxylicious-pqc-filter-1.0.0-SNAPSHOT.jar \
   examples/docker/config/pqc-keys/
 ```
 
-This creates `pqc-public.der` and `pqc-private.der` in the keys directory.
-These files are used to seed Vault on startup (see step 3).
+This creates `pqc-public.der`, `pqc-private.der`, `x25519-public.der`, and
+`x25519-private.der` in the keys directory. The ML-KEM keys are used for
+post-quantum key encapsulation, and the X25519 keys are used for hybrid mode
+(ML-KEM + X25519 ECDH). These files are used to seed Vault on startup (see step 3).
 
 #### 3. Start the infrastructure
 
@@ -205,8 +208,9 @@ docker compose logs -f kroxylicious
 docker exec pqc-demo-vault vault kv get secret/kroxylicious/pqc
 ```
 
-This shows the base64-encoded `publicKey` and `privateKey` fields stored in
-Vault KV v2, along with the secret version number.
+This shows the base64-encoded `publicKey`, `privateKey`, `x25519PublicKey`,
+and `x25519PrivateKey` fields stored in Vault KV v2, along with the secret
+version number.
 
 #### 5. Produce messages (encrypted by proxy)
 
@@ -316,10 +320,11 @@ docker compose down
 The `vault-init` container runs `config/vault-init.sh`, which:
 
 1. Waits for Vault to be ready
-2. Reads the pre-generated ML-KEM DER key files from `config/pqc-keys/`
+2. Reads the pre-generated DER key files from `config/pqc-keys/`
+   (ML-KEM keys and X25519 keys for hybrid mode)
 3. Base64-encodes them
 4. Stores them in Vault KV v2 at `secret/kroxylicious/pqc` with fields
-   `publicKey` and `privateKey`
+   `publicKey`, `privateKey`, `x25519PublicKey`, and `x25519PrivateKey`
 5. Exits successfully
 
 The Kroxylicious proxy does not start until `vault-init` completes
@@ -335,7 +340,7 @@ filterDefinitions:
     type: PqcRecordEncryptionFilterFactory
     config:
       kemAlgorithm: ML_KEM_768
-      hybridMode: false
+      hybridMode: true
       keyProviderType: vault
       keyProviderConfig:
         vaultAddress: http://vault:8200
@@ -378,12 +383,18 @@ discover the `PqcRecordEncryptionFilterFactory`.
 
 ### Vault secret format
 
-The Vault KV v2 secret must contain two fields:
+The Vault KV v2 secret must contain the following fields:
 
-| Field | Format | Description |
-|-------|--------|-------------|
-| `publicKey` | Base64-encoded X.509 DER | ML-KEM public key |
-| `privateKey` | Base64-encoded PKCS#8 DER | ML-KEM private key |
+| Field | Required | Format | Description |
+|-------|----------|--------|-------------|
+| `publicKey` | Yes | Base64-encoded X.509 DER | ML-KEM public key |
+| `privateKey` | Yes | Base64-encoded PKCS#8 DER | ML-KEM private key |
+| `x25519PublicKey` | For hybrid mode | Base64-encoded X.509 DER | X25519 public key |
+| `x25519PrivateKey` | For hybrid mode | Base64-encoded PKCS#8 DER | X25519 private key |
+
+The X25519 keys are only required when `hybridMode: true` is set in the filter
+configuration. They provide the classical ECDH component of the hybrid
+ML-KEM + X25519 key agreement.
 
 Secret versions map to key IDs. The filter uses the latest version as the
 active encryption key and can decrypt records encrypted with older versions
@@ -471,7 +482,9 @@ Or seed manually:
 ```bash
 docker exec pqc-demo-vault vault kv put secret/kroxylicious/pqc \
   publicKey="$(base64 -w 0 config/pqc-keys/pqc-public.der)" \
-  privateKey="$(base64 -w 0 config/pqc-keys/pqc-private.der)"
+  privateKey="$(base64 -w 0 config/pqc-keys/pqc-private.der)" \
+  x25519PublicKey="$(base64 -w 0 config/pqc-keys/x25519-public.der)" \
+  x25519PrivateKey="$(base64 -w 0 config/pqc-keys/x25519-private.der)"
 ```
 
 **`Failed to initialize PQC encryption`**
