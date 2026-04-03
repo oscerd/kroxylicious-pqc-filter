@@ -24,6 +24,7 @@
         <!-- Dependency versions -->
         <kroxylicious.version>0.19.0</kroxylicious.version>
         <spring.vault.version>3.1.2</spring.vault.version>
+        <google.cloud.secretmanager.version>2.55.0</google.cloud.secretmanager.version>
         <kafka.version>3.9.0</kafka.version>
         <bouncycastle.version>1.83</bouncycastle.version>
         <jackson.version>2.18.3</jackson.version>
@@ -231,6 +232,65 @@
                                 <configuration>
                                     <sources>
                                         <source>src/test/java-vault</source>
+                                    </sources>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+        <!-- GCP Secret Manager key provider profile -->
+        <profile>
+            <id>gcp</id>
+            <dependencies>
+                <dependency>
+                    <groupId>com.google.cloud</groupId>
+                    <artifactId>google-cloud-secretmanager</artifactId>
+                    <version>${google.cloud.secretmanager.version}</version>
+                </dependency>
+            </dependencies>
+            <build>
+                <!-- Override default resources: exclude base KeyProvider service file,
+                     use the gcp one which registers both FileSystem and GCP providers -->
+                <resources>
+                    <resource>
+                        <directory>src/main/resources</directory>
+                        <excludes>
+                            <exclude>META-INF/services/io.kroxylicious.filter.pqc.crypto.KeyProvider</exclude>
+                        </excludes>
+                    </resource>
+                    <resource>
+                        <directory>src/main/resources-gcp</directory>
+                    </resource>
+                </resources>
+                <plugins>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>build-helper-maven-plugin</artifactId>
+                        <version>3.6.0</version>
+                        <executions>
+                            <execution>
+                                <id>add-gcp-source</id>
+                                <phase>generate-sources</phase>
+                                <goals>
+                                    <goal>add-source</goal>
+                                </goals>
+                                <configuration>
+                                    <sources>
+                                        <source>src/main/java-gcp</source>
+                                    </sources>
+                                </configuration>
+                            </execution>
+                            <execution>
+                                <id>add-gcp-test-source</id>
+                                <phase>generate-test-sources</phase>
+                                <goals>
+                                    <goal>add-test-source</goal>
+                                </goals>
+                                <configuration>
+                                    <sources>
+                                        <source>src/test/java-gcp</source>
                                     </sources>
                                 </configuration>
                             </execution>
