@@ -264,6 +264,109 @@ kroxylicious-pqc-filter/
     docker/                                 # Docker Compose: Kafka + Vault + Kroxylicious
 ```
 
+### Data Flow
+
+#### What is stored in Vault
+
+Vault KV v2 holds the ML-KEM key pair at `secret/<secretPath>` (e.g., `secret/kroxylicious/pqc`):
+
+| Field | Content | Format |
+|-------|---------|--------|
+| `publicKey` | ML-KEM public key (used for encapsulation) | Base64-encoded X.509 DER |
+| `privateKey` | ML-KEM private key (used for decapsulation) | Base64-encoded PKCS#8 DER |
+
+Each Vault secret version acts as a key ID, enabling key rotation. New versions
+encrypt new records; old versions can still decrypt records encrypted with them.
+
+#### Startup flow
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                           STARTUP                                   │
+│                                                                     │
+│  1. Vault starts (dev mode, port 8200)                              │
+│         │                                                           │
+│  2. vault-init container:                                           │
+│         │  • Reads pre-generated ML-KEM DER key files from disk     │
+│         │  • Base64-encodes them                                    │
+│         │  • POST /v1/secret/data/kroxylicious/pqc                  │
+│         │  • Stores publicKey + privateKey in Vault KV v2           │
+│         │  • Exits                                                  │
+│         │                                                           │
+│  3. Kafka starts (KRaft mode, port 9092)                            │
+│         │                                                           │
+│  4. Kroxylicious starts (port 9192):                                │
+│         │                                                           │
+│         │  FilterFactory.initialize()                                │
+│         │    → PqcKeyManager resolves VaultKeyProvider               │
+│         │      via ServiceLoader (matches keyProviderType: "vault")  │
+│         │    → VaultKeyProvider.configure()                          │
+│         │      connects to Vault (token/approle/kubernetes auth)     │
+│         │    → Fetches ML-KEM key pair from Vault KV v2              │
+│         │      (GET /v1/secret/data/kroxylicious/pqc)                │
+│         │    → Decodes: base64 → DER bytes → Java Key objects        │
+│         │    → PqcCryptoEngine initialized with key pair             │
+│         ▼                                                           │
+│       Proxy ready — Vault is NOT contacted again per-message         │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+#### Produce flow (encryption)
+
+```
+                         Kroxylicious (:9192)
+                        ┌───────────────────────────────────────────┐
+Producer ──plaintext──> │ PqcRecordEncryptionFilter                 │
+                        │   .onProduceRequest()                     │
+                        │                                           │
+                        │ For each record in matching topic:        │
+                        │   1. ML-KEM encapsulate (public key)      │
+                        │      → fresh shared secret                │
+                        │      → encapsulation blob                 │
+                        │   2. SHA-256(shared secret) → AES-256 key │
+                        │   3. AES-GCM encrypt record value         │
+                        │   4. Build binary envelope:               │
+                        │      [ver|encap_len|encap|IV|ciphertext]  │
+                        │   5. Add x-pqc-encrypted header           │
+                        └────────────────┬──────────────────────────┘
+                                         │
+                                         ▼
+                                  Kafka Broker (:9092)
+                                  stores encrypted blob
+```
+
+#### Fetch flow (decryption)
+
+```
+                                  Kafka Broker (:9092)
+                                  returns encrypted blob
+                                         │
+                                         ▼
+                        ┌────────────────┴──────────────────────────┐
+                        │ PqcRecordEncryptionFilter                 │
+                        │   .onFetchResponse()                      │
+                        │                                           │
+                        │ For each record with x-pqc-encrypted:     │
+                        │   1. Parse envelope → extract encap +     │
+                        │      ciphertext                           │
+                        │   2. ML-KEM decapsulate (private key)     │
+                        │      → recover shared secret              │
+                        │   3. SHA-256(shared secret) → AES-256 key │
+                        │   4. AES-GCM decrypt → plaintext          │
+                        │   5. Remove x-pqc-encrypted header        │
+Consumer <──plaintext── │                                           │
+                        └───────────────────────────────────────────┘
+                         Kroxylicious (:9192)
+```
+
+#### Key design decisions
+
+- **Vault is contacted only at startup**, not per-message. No per-record latency.
+- **If Vault goes down after startup**, encryption/decryption continues unaffected.
+- **Each record gets a fresh ML-KEM encapsulation** (new shared secret + random IV),
+  ensuring semantic security (IND-CCA2) even though the same key pair is reused.
+- **Key rotation** is done by writing a new Vault secret version and restarting the proxy.
+
 ### Filter Lifecycle
 
 ```
