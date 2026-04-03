@@ -52,6 +52,7 @@ public class FileSystemKeyProvider implements KeyProvider {
 
     private PublicKey publicKey;
     private PrivateKey privateKey;
+    private KeyPair x25519KeyPair;
 
     @Override
     public String type() {
@@ -90,6 +91,24 @@ public class FileSystemKeyProvider implements KeyProvider {
             PqcCryptoEngine.saveKey(pubKeyPath, publicKey.getEncoded());
             PqcCryptoEngine.saveKey(privKeyPath, privateKey.getEncoded());
         }
+
+        if (config.isHybridMode()) {
+            Path x25519PubPath = pubKeyPath.getParent().resolve("x25519-public.der");
+            Path x25519PrivPath = pubKeyPath.getParent().resolve("x25519-private.der");
+
+            if (Files.exists(x25519PubPath) && Files.exists(x25519PrivPath)) {
+                LOG.info("Loading existing X25519 key pair from {} and {}", x25519PubPath, x25519PrivPath);
+                this.x25519KeyPair = new KeyPair(
+                        PqcCryptoEngine.loadX25519PublicKey(x25519PubPath),
+                        PqcCryptoEngine.loadX25519PrivateKey(x25519PrivPath));
+            }
+            else {
+                LOG.info("Generating new X25519 key pair and saving to {} and {}", x25519PubPath, x25519PrivPath);
+                this.x25519KeyPair = PqcCryptoEngine.generateX25519KeyPair();
+                PqcCryptoEngine.saveKey(x25519PubPath, x25519KeyPair.getPublic().getEncoded());
+                PqcCryptoEngine.saveKey(x25519PrivPath, x25519KeyPair.getPrivate().getEncoded());
+            }
+        }
     }
 
     @Override
@@ -106,6 +125,11 @@ public class FileSystemKeyProvider implements KeyProvider {
                     "Unknown key ID '" + keyId + "'. FileSystemKeyProvider only supports key ID '" + DEFAULT_KEY_ID + "'");
         }
         return new KeyPair(publicKey, privateKey);
+    }
+
+    @Override
+    public KeyPair getX25519KeyPair() {
+        return x25519KeyPair;
     }
 
     @Override

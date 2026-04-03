@@ -95,6 +95,23 @@ public class PqcKeyGeneratorCli {
         System.out.println("Private key: " + privKeyPath.toAbsolutePath());
         System.out.println("  Size:      " + keyPair.getPrivate().getEncoded().length + " bytes");
         System.out.println("  Format:    " + keyPair.getPrivate().getFormat());
+
+        // Generate X25519 key pair for hybrid mode
+        System.out.println("\nGenerating X25519 key pair for hybrid mode...");
+        KeyPairGenerator x25519Gen = KeyPairGenerator.getInstance("X25519");
+        KeyPair x25519KeyPair = x25519Gen.generateKeyPair();
+
+        Path x25519PubPath = Path.of(outputDir, "x25519-public.der");
+        Path x25519PrivPath = Path.of(outputDir, "x25519-private.der");
+
+        Files.write(x25519PubPath, x25519KeyPair.getPublic().getEncoded());
+        Files.write(x25519PrivPath, x25519KeyPair.getPrivate().getEncoded());
+
+        System.out.println("X25519 public key:  " + x25519PubPath.toAbsolutePath());
+        System.out.println("  Size:             " + x25519KeyPair.getPublic().getEncoded().length + " bytes");
+        System.out.println("X25519 private key: " + x25519PrivPath.toAbsolutePath());
+        System.out.println("  Size:             " + x25519KeyPair.getPrivate().getEncoded().length + " bytes");
+
         System.out.println("\nDone. Add these paths to your Kroxylicious proxy configuration.");
     }
 }
