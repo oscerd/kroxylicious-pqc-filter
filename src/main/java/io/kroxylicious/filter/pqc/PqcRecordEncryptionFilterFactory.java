@@ -53,12 +53,13 @@ public class PqcRecordEncryptionFilterFactory
 
     /**
      * Shared context created once during initialization and passed to each filter instance.
-     * Contains the crypto engine (thread-safe) and compiled topic patterns.
+     * Contains the crypto engine (thread-safe), compiled topic patterns, and key manager.
      */
     public record SharedPqcContext(
             PqcCryptoEngine cryptoEngine,
             List<Pattern> topicPatterns,
-            PqcEncryptionConfig config) {
+            PqcEncryptionConfig config,
+            PqcKeyManager keyManager) {
     }
 
     @Override
@@ -79,14 +80,19 @@ public class PqcRecordEncryptionFilterFactory
                     .map(Pattern::compile)
                     .toList();
 
-            LOG.info("PQC Record Encryption filter initialized successfully with {} key pair",
-                    config.getKemAlgorithm().getDisplayName());
+            LOG.info("PQC Record Encryption filter initialized successfully with {} key pair (provider={})",
+                    config.getKemAlgorithm().getDisplayName(),
+                    config.getKeyProviderType());
 
-            return new SharedPqcContext(cryptoEngine, compiledPatterns, config);
+            return new SharedPqcContext(cryptoEngine, compiledPatterns, config, keyManager);
         }
         catch (GeneralSecurityException | IOException e) {
             throw new PluginConfigurationException(
                     "Failed to initialize PQC encryption: " + e.getMessage(), e);
+        }
+        catch (Exception e) {
+            throw new PluginConfigurationException(
+                    "Failed to initialize key provider: " + e.getMessage(), e);
         }
     }
 
@@ -101,5 +107,8 @@ public class PqcRecordEncryptionFilterFactory
     @Override
     public void close(SharedPqcContext sharedContext) {
         LOG.info("Closing PQC Record Encryption filter");
+        if (sharedContext != null && sharedContext.keyManager() != null) {
+            sharedContext.keyManager().close();
+        }
     }
 }

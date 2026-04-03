@@ -21,64 +21,40 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.security.GeneralSecurityException;
 import java.security.KeyPair;
-import java.security.PrivateKey;
-import java.security.PublicKey;
+import java.util.ServiceLoader;
 
 /**
  * Manages ML-KEM key pairs for the PQC encryption filter.
- * Handles loading keys from filesystem paths and generating new key pairs.
+ * Delegates key loading and storage to a {@link KeyProvider} implementation
+ * resolved via {@link ServiceLoader}.
  */
 public class PqcKeyManager {
 
     private static final Logger LOG = LoggerFactory.getLogger(PqcKeyManager.class);
 
     private final KemAlgorithm algorithm;
-    private final PublicKey publicKey;
-    private final PrivateKey privateKey;
+    private final KeyProvider keyProvider;
 
     public PqcKeyManager(PqcEncryptionConfig config) throws GeneralSecurityException, IOException {
         this.algorithm = config.getKemAlgorithm();
+        this.keyProvider = resolveKeyProvider(config.getKeyProviderType());
 
-        Path pubKeyPath = Path.of(config.getPublicKeyPath());
-        Path privKeyPath = Path.of(config.getPrivateKeyPath());
-
-        if (Files.exists(pubKeyPath) && Files.exists(privKeyPath)) {
-            LOG.info("Loading existing ML-KEM key pair ({}) from {} and {}",
-                    algorithm.getDisplayName(), pubKeyPath, privKeyPath);
-            this.publicKey = PqcCryptoEngine.loadPublicKey(pubKeyPath);
-            this.privateKey = PqcCryptoEngine.loadPrivateKey(privKeyPath);
-        }
-        else {
-            LOG.info("Generating new ML-KEM key pair ({}) and saving to {} and {}",
-                    algorithm.getDisplayName(), pubKeyPath, privKeyPath);
-            KeyPair keyPair = PqcCryptoEngine.generateKeyPair(algorithm);
-            this.publicKey = keyPair.getPublic();
-            this.privateKey = keyPair.getPrivate();
-
-            PqcCryptoEngine.saveKey(pubKeyPath, publicKey.getEncoded());
-            PqcCryptoEngine.saveKey(privKeyPath, privateKey.getEncoded());
-        }
+        LOG.info("Using key provider: {} (type={})", keyProvider.getClass().getSimpleName(), keyProvider.type());
+        keyProvider.configure(config);
     }
 
     /**
-     * For testing: construct with pre-generated keys.
+     * For testing: construct with a pre-configured key provider.
      */
-    PqcKeyManager(KemAlgorithm algorithm, PublicKey publicKey, PrivateKey privateKey) {
+    PqcKeyManager(KemAlgorithm algorithm, KeyProvider keyProvider) {
         this.algorithm = algorithm;
-        this.publicKey = publicKey;
-        this.privateKey = privateKey;
+        this.keyProvider = keyProvider;
     }
 
-    public PublicKey getPublicKey() {
-        return publicKey;
-    }
-
-    public PrivateKey getPrivateKey() {
-        return privateKey;
+    public KeyProvider getKeyProvider() {
+        return keyProvider;
     }
 
     public KemAlgorithm getAlgorithm() {
@@ -86,9 +62,37 @@ public class PqcKeyManager {
     }
 
     /**
-     * Create a PqcCryptoEngine configured with this key manager's keys.
+     * Create a PqcCryptoEngine configured with the active key pair from this key manager's provider.
      */
-    public PqcCryptoEngine createEngine(boolean hybridMode) {
-        return new PqcCryptoEngine(algorithm, hybridMode, publicKey, privateKey);
+    public PqcCryptoEngine createEngine(boolean hybridMode) throws GeneralSecurityException {
+        KeyPair keyPair = keyProvider.getActiveKeyPair(algorithm);
+        return new PqcCryptoEngine(algorithm, hybridMode, keyPair.getPublic(), keyPair.getPrivate());
+    }
+
+    /**
+     * Close the underlying key provider, releasing any held resources.
+     */
+    public void close() {
+        keyProvider.close();
+    }
+
+    private static KeyProvider resolveKeyProvider(String type) {
+        ServiceLoader<KeyProvider> loader = ServiceLoader.load(KeyProvider.class);
+        for (KeyProvider provider : loader) {
+            if (provider.type().equals(type)) {
+                LOG.debug("Resolved key provider '{}' via ServiceLoader: {}",
+                        type, provider.getClass().getName());
+                return provider;
+            }
+        }
+        // Fallback: if ServiceLoader didn't find it and type is "filesystem", use the built-in default
+        if ("filesystem".equals(type)) {
+            LOG.debug("Using built-in FileSystemKeyProvider");
+            return new FileSystemKeyProvider();
+        }
+        throw new IllegalArgumentException(
+                "No KeyProvider found for type '" + type + "'. "
+                        + "Ensure a KeyProvider implementation with this type is on the classpath "
+                        + "and registered via META-INF/services/" + KeyProvider.class.getName());
     }
 }

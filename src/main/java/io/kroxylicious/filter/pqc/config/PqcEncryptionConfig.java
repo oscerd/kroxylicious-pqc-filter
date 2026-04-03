@@ -19,7 +19,6 @@ import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
 import java.util.List;
-import java.util.Objects;
 
 /**
  * Configuration for the PQC Record Encryption filter.
@@ -78,19 +77,22 @@ public class PqcEncryptionConfig {
     private final String publicKeyPath;
     private final String privateKeyPath;
     private final List<String> topicPatterns;
+    private final String keyProviderType;
 
     @JsonCreator
     public PqcEncryptionConfig(
             @JsonProperty(value = "kemAlgorithm") KemAlgorithm kemAlgorithm,
             @JsonProperty(value = "hybridMode") Boolean hybridMode,
-            @JsonProperty(value = "publicKeyPath", required = true) String publicKeyPath,
-            @JsonProperty(value = "privateKeyPath", required = true) String privateKeyPath,
-            @JsonProperty(value = "topicPatterns") List<String> topicPatterns) {
+            @JsonProperty(value = "publicKeyPath") String publicKeyPath,
+            @JsonProperty(value = "privateKeyPath") String privateKeyPath,
+            @JsonProperty(value = "topicPatterns") List<String> topicPatterns,
+            @JsonProperty(value = "keyProviderType") String keyProviderType) {
         this.kemAlgorithm = kemAlgorithm != null ? kemAlgorithm : KemAlgorithm.ML_KEM_768;
         this.hybridMode = hybridMode != null ? hybridMode : true;
-        this.publicKeyPath = Objects.requireNonNull(publicKeyPath, "publicKeyPath is required");
-        this.privateKeyPath = Objects.requireNonNull(privateKeyPath, "privateKeyPath is required");
+        this.publicKeyPath = publicKeyPath;
+        this.privateKeyPath = privateKeyPath;
         this.topicPatterns = topicPatterns != null ? List.copyOf(topicPatterns) : List.of(".*");
+        this.keyProviderType = keyProviderType != null ? keyProviderType : "filesystem";
     }
 
     public KemAlgorithm getKemAlgorithm() {
@@ -111,5 +113,9 @@ public class PqcEncryptionConfig {
 
     public List<String> getTopicPatterns() {
         return topicPatterns;
+    }
+
+    public String getKeyProviderType() {
+        return keyProviderType;
     }
 }
