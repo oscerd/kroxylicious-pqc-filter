@@ -179,6 +179,10 @@ public class PqcStandaloneDemo {
         String decPqc = new String(pqcOnly.decrypt(encPqc), StandardCharsets.UTF_8);
         assert message.equals(decPqc);
         System.out.println("    [OK] PQC-only: encrypt -> decrypt roundtrip successful.");
+
+        String decHybrid = new String(hybrid.decrypt(encHybrid), StandardCharsets.UTF_8);
+        assert message.equals(decHybrid);
+        System.out.println("    [OK] Hybrid:   encrypt -> decrypt roundtrip successful.");
         System.out.println();
     }
 
