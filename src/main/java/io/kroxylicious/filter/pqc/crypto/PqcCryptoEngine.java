@@ -89,6 +89,10 @@ public class PqcCryptoEngine {
     private final PrivateKey mlKemPrivateKey;
     private final SecureRandom secureRandom;
 
+    // Static X25519 key pair for hybrid mode (persistent across encrypt/decrypt)
+    private final PublicKey x25519StaticPublicKey;
+    private final PrivateKey x25519StaticPrivateKey;
+
     static {
         if (Security.getProvider("BC") == null) {
             Security.addProvider(new BouncyCastleProvider());
@@ -105,6 +109,22 @@ public class PqcCryptoEngine {
         this.mlKemPublicKey = mlKemPublicKey;
         this.mlKemPrivateKey = mlKemPrivateKey;
         this.secureRandom = new SecureRandom();
+
+        if (hybridMode) {
+            try {
+                KeyPairGenerator x25519Gen = KeyPairGenerator.getInstance("X25519");
+                KeyPair staticKp = x25519Gen.generateKeyPair();
+                this.x25519StaticPublicKey = staticKp.getPublic();
+                this.x25519StaticPrivateKey = staticKp.getPrivate();
+            }
+            catch (GeneralSecurityException e) {
+                throw new IllegalStateException("Failed to generate X25519 static key pair for hybrid mode", e);
+            }
+        }
+        else {
+            this.x25519StaticPublicKey = null;
+            this.x25519StaticPrivateKey = null;
+        }
     }
 
     /**
@@ -310,32 +330,26 @@ public class PqcCryptoEngine {
     }
 
     private byte[] performX25519Agreement(KeyPair ephemeralKp) throws GeneralSecurityException {
-        // In a real deployment, the receiver's X25519 public key would be
-        // distributed alongside the ML-KEM public key. For this implementation,
-        // we derive a deterministic X25519 key pair from a seed so both
-        // encrypt and decrypt sides can agree.
-        // The receiver's X25519 public key is embedded in configuration.
+        // ECDH key agreement: ephemeral private key + static receiver public key
+        // The static public key is persistent across the engine's lifetime, ensuring
+        // that the decrypt side (which holds the matching static private key) can
+        // recover the same shared secret.
         KeyAgreement ka = KeyAgreement.getInstance("X25519");
         ka.init(ephemeralKp.getPrivate());
-        // We need the receiver's X25519 public key - derive from ML-KEM public key bytes
-        KeyPairGenerator x25519Gen = KeyPairGenerator.getInstance("X25519");
-        KeyPair receiverKp = x25519Gen.generateKeyPair();
-        ka.doPhase(receiverKp.getPublic(), true);
+        ka.doPhase(x25519StaticPublicKey, true);
         return ka.generateSecret();
     }
 
     private byte[] performX25519Decapsulation(byte[] ephemeralPubKeyRaw) throws GeneralSecurityException {
-        // Reconstruct X25519 public key from raw bytes and perform key agreement
-        // with our static X25519 private key
+        // Reconstruct ephemeral X25519 public key from the envelope and perform
+        // ECDH key agreement with our persistent static private key.
+        // This mirrors performX25519Agreement(): ECDH(ephPriv, staticPub) == ECDH(staticPriv, ephPub)
         KeyFactory kf = KeyFactory.getInstance("X25519");
         byte[] x509Encoded = wrapRawX25519PublicKey(ephemeralPubKeyRaw);
         PublicKey ephemeralPubKey = kf.generatePublic(new X509EncodedKeySpec(x509Encoded));
 
-        KeyPairGenerator x25519Gen = KeyPairGenerator.getInstance("X25519");
-        KeyPair staticKp = x25519Gen.generateKeyPair();
-
         KeyAgreement ka = KeyAgreement.getInstance("X25519");
-        ka.init(staticKp.getPrivate());
+        ka.init(x25519StaticPrivateKey);
         ka.doPhase(ephemeralPubKey, true);
         return ka.generateSecret();
     }
