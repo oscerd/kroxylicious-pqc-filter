@@ -188,4 +188,58 @@ class PqcCryptoEngineTest {
         // Then
         assertThat(encrypted[0]).isEqualTo((byte) 0x02); // VERSION_HYBRID
     }
+
+    @ParameterizedTest
+    @EnumSource(KemAlgorithm.class)
+    void shouldEncryptAndDecryptInHybridModeWithAllKemVariants(KemAlgorithm algorithm) throws Exception {
+        // Given
+        KeyPair keyPair = PqcCryptoEngine.generateKeyPair(algorithm);
+        PqcCryptoEngine engine = new PqcCryptoEngine(
+                algorithm, true, keyPair.getPublic(), keyPair.getPrivate());
+        byte[] plaintext = "Hybrid mode roundtrip test!".getBytes(StandardCharsets.UTF_8);
+
+        // When
+        byte[] encrypted = engine.encrypt(plaintext);
+        byte[] decrypted = engine.decrypt(encrypted);
+
+        // Then
+        assertThat(encrypted[0]).isEqualTo((byte) 0x02);
+        assertThat(decrypted).isEqualTo(plaintext);
+    }
+
+    @Test
+    void shouldProduceDifferentCiphertextInHybridMode() throws Exception {
+        // Given
+        KeyPair keyPair = PqcCryptoEngine.generateKeyPair(KemAlgorithm.ML_KEM_768);
+        PqcCryptoEngine engine = new PqcCryptoEngine(
+                KemAlgorithm.ML_KEM_768, true, keyPair.getPublic(), keyPair.getPrivate());
+        byte[] plaintext = "hybrid semantic security".getBytes(StandardCharsets.UTF_8);
+
+        // When
+        byte[] encrypted1 = engine.encrypt(plaintext);
+        byte[] encrypted2 = engine.encrypt(plaintext);
+
+        // Then - different ciphertexts (fresh ephemeral X25519 + ML-KEM per call)
+        assertThat(encrypted1).isNotEqualTo(encrypted2);
+        assertThat(engine.decrypt(encrypted1)).isEqualTo(plaintext);
+        assertThat(engine.decrypt(encrypted2)).isEqualTo(plaintext);
+    }
+
+    @Test
+    void hybridModeShouldProduceLargerEnvelopeThanPqcOnly() throws Exception {
+        // Given
+        KeyPair keyPair = PqcCryptoEngine.generateKeyPair(KemAlgorithm.ML_KEM_768);
+        PqcCryptoEngine pqcOnly = new PqcCryptoEngine(
+                KemAlgorithm.ML_KEM_768, false, keyPair.getPublic(), keyPair.getPrivate());
+        PqcCryptoEngine hybrid = new PqcCryptoEngine(
+                KemAlgorithm.ML_KEM_768, true, keyPair.getPublic(), keyPair.getPrivate());
+        byte[] plaintext = "size comparison".getBytes(StandardCharsets.UTF_8);
+
+        // When
+        byte[] pqcEncrypted = pqcOnly.encrypt(plaintext);
+        byte[] hybridEncrypted = hybrid.encrypt(plaintext);
+
+        // Then - hybrid adds 32 bytes for the X25519 ephemeral public key
+        assertThat(hybridEncrypted.length).isEqualTo(pqcEncrypted.length + 32);
+    }
 }

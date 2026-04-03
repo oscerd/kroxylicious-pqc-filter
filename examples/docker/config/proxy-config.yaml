@@ -22,7 +22,7 @@ filterDefinitions:
     type: PqcRecordEncryptionFilterFactory
     config:
       kemAlgorithm: ML_KEM_768
-      hybridMode: false
+      hybridMode: true
       keyProviderType: vault
       keyProviderConfig:
         vaultAddress: http://vault:8200
