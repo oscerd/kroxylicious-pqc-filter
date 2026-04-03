@@ -1,14 +1,17 @@
 # =============================================================================
-# Docker Compose: Kafka + Kroxylicious PQC Filter Demo
+# Docker Compose: Kafka + Kroxylicious PQC Filter + HashiCorp Vault Demo
 # =============================================================================
 #
 # Architecture:
 #
+#   Vault (KV v2)                              <-- Stores ML-KEM key material
+#       ^
+#       |
 #   Producer (localhost:9192)
 #       |
 #       v
 #   Kroxylicious Proxy (:9192)          <-- PQC filter encrypts on Produce
-#       |
+#       |                                    (keys fetched from Vault)
 #       v
 #   Kafka Broker (:9092)                 <-- Stores encrypted records
 #       |
@@ -17,6 +20,10 @@
 #       |
 #       v
 #   Consumer (localhost:9192)
+#
+# Prerequisites:
+#   Build the filter JAR with Vault support:
+#     mvn clean package -Pvault -DskipTests
 #
 # Usage:
 #   docker compose up -d
@@ -35,10 +42,47 @@
 #     -Dexec.mainClass=io.kroxylicious.filter.pqc.examples.PqcConsumerExample \
 #     -Dexec.args="localhost:9092"
 #
+#   # Inspect keys in Vault:
+#   docker exec pqc-demo-vault vault kv get secret/kroxylicious/pqc
+#
 #   docker compose down
 # =============================================================================
 
 services:
+  # ── HashiCorp Vault (dev mode) ────────────────────────────────────────
+  vault:
+    image: hashicorp/vault:1.19
+    container_name: pqc-demo-vault
+    hostname: vault
+    ports:
+      - "8200:8200"
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: pqc-demo-token
+      VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+    cap_add:
+      - IPC_LOCK
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8200/v1/sys/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  # ── Vault Key Seeder (runs once, then exits) ──────────────────────────
+  vault-init:
+    image: hashicorp/vault:1.19
+    container_name: pqc-demo-vault-init
+    environment:
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: pqc-demo-token
+    volumes:
+      - ./config/vault-init.sh:/vault-init.sh:ro
+      - ./config/pqc-keys:/keys:ro
+    entrypoint: ["/bin/sh", "/vault-init.sh"]
+    depends_on:
+      vault:
+        condition: service_healthy
+
   # ── Kafka Broker (KRaft mode, no Zookeeper) ──────────────────────────
   kafka:
     image: apache/kafka:3.9.0
@@ -78,9 +122,10 @@ services:
       KROXYLICIOUS_CLASSPATH: /opt/kroxylicious/plugins/*
     volumes:
       - ./config/proxy-config.yaml:/opt/kroxylicious/config/proxy-config.yaml:ro
-      - ./config/pqc-keys:/opt/kroxylicious/pqc-keys:ro
       - ../../target/kroxylicious-pqc-filter-1.0.0-SNAPSHOT.jar:/opt/kroxylicious/plugins/kroxylicious-pqc-filter.jar:ro
     command: ["--config", "/opt/kroxylicious/config/proxy-config.yaml"]
     depends_on:
       kafka:
         condition: service_healthy
+      vault-init:
+        condition: service_completed_successfully

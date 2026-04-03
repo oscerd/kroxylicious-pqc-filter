@@ -23,6 +23,8 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.security.GeneralSecurityException;
 import java.security.KeyPair;
+import java.util.Iterator;
+import java.util.ServiceConfigurationError;
 import java.util.ServiceLoader;
 
 /**
@@ -78,11 +80,20 @@ public class PqcKeyManager {
 
     private static KeyProvider resolveKeyProvider(String type) {
         ServiceLoader<KeyProvider> loader = ServiceLoader.load(KeyProvider.class);
-        for (KeyProvider provider : loader) {
-            if (provider.type().equals(type)) {
-                LOG.debug("Resolved key provider '{}' via ServiceLoader: {}",
-                        type, provider.getClass().getName());
-                return provider;
+        Iterator<KeyProvider> it = loader.iterator();
+        while (it.hasNext()) {
+            try {
+                KeyProvider provider = it.next();
+                if (provider.type().equals(type)) {
+                    LOG.debug("Resolved key provider '{}' via ServiceLoader: {}",
+                            type, provider.getClass().getName());
+                    return provider;
+                }
+            }
+            catch (ServiceConfigurationError e) {
+                // Skip providers whose classes are not on the classpath
+                // (e.g., optional vault provider when built without -Pvault)
+                LOG.debug("Skipping unavailable KeyProvider: {}", e.getMessage());
             }
         }
         // Fallback: if ServiceLoader didn't find it and type is "filesystem", use the built-in default
