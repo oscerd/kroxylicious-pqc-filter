@@ -16,6 +16,9 @@
 package io.kroxylicious.filter.pqc.crypto;
 
 import io.kroxylicious.filter.pqc.config.PqcEncryptionConfig.KemAlgorithm;
+import org.bouncycastle.crypto.digests.SHA256Digest;
+import org.bouncycastle.crypto.generators.HKDFBytesGenerator;
+import org.bouncycastle.crypto.params.HKDFParameters;
 import org.bouncycastle.jcajce.SecretKeyWithEncapsulation;
 import org.bouncycastle.jcajce.spec.KEMExtractSpec;
 import org.bouncycastle.jcajce.spec.KEMGenerateSpec;
@@ -39,12 +42,10 @@ import java.security.GeneralSecurityException;
 import java.security.KeyFactory;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
-import java.security.MessageDigest;
 import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.security.SecureRandom;
 import java.security.Security;
-import java.security.spec.NamedParameterSpec;
 import java.security.spec.PKCS8EncodedKeySpec;
 import java.security.spec.X509EncodedKeySpec;
 import java.util.Arrays;
@@ -81,7 +82,13 @@ public class PqcCryptoEngine {
     private static final int GCM_IV_LENGTH = 12;
     private static final int GCM_TAG_BITS = 128;
     private static final int X25519_PUBLIC_KEY_LENGTH = 32;
+    private static final int AES_KEY_LENGTH = 32;
     private static final String AES_GCM = "AES/GCM/NoPadding";
+
+    private static final byte[] HKDF_SALT_PQC = "kroxylicious-pqc-v1".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    private static final byte[] HKDF_INFO_PQC = "pqc-aes256-key".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    private static final byte[] HKDF_SALT_HYBRID = "kroxylicious-pqc-hybrid-v1".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    private static final byte[] HKDF_INFO_HYBRID = "hybrid-aes256-key".getBytes(java.nio.charset.StandardCharsets.UTF_8);
 
     private final KemAlgorithm kemAlgorithm;
     private final boolean hybridMode;
@@ -348,22 +355,27 @@ public class PqcCryptoEngine {
         return buf.array();
     }
 
-    private byte[] deriveKey(byte[] secret) throws GeneralSecurityException {
-        // SHA-256 to normalize to exactly 32 bytes for AES-256
-        MessageDigest digest = MessageDigest.getInstance("SHA-256");
-        digest.update((byte) 0x01); // domain separator for PQC-only mode
-        digest.update("kroxylicious-pqc-v1".getBytes());
-        return digest.digest(secret);
+    private byte[] deriveKey(byte[] secret) {
+        // HKDF-SHA256 (RFC 5869) extract-and-expand
+        HKDFBytesGenerator hkdf = new HKDFBytesGenerator(new SHA256Digest());
+        hkdf.init(new HKDFParameters(secret, HKDF_SALT_PQC, HKDF_INFO_PQC));
+        byte[] okm = new byte[AES_KEY_LENGTH];
+        hkdf.generateBytes(okm, 0, AES_KEY_LENGTH);
+        return okm;
     }
 
-    private byte[] deriveHybridKey(byte[] pqcSecret, byte[] classicalSecret) throws GeneralSecurityException {
-        // Concatenate both secrets and hash - simple but effective KDF
-        // SHA-256(domain_sep || pqcSecret || classicalSecret)
-        MessageDigest digest = MessageDigest.getInstance("SHA-256");
-        digest.update((byte) 0x02); // domain separator for hybrid mode
-        digest.update("kroxylicious-pqc-hybrid-v1".getBytes());
-        digest.update(pqcSecret);
-        return digest.digest(classicalSecret);
+    private byte[] deriveHybridKey(byte[] pqcSecret, byte[] classicalSecret) {
+        // HKDF-SHA256 (RFC 5869) extract-and-expand with concatenated IKM
+        byte[] ikm = new byte[pqcSecret.length + classicalSecret.length];
+        System.arraycopy(pqcSecret, 0, ikm, 0, pqcSecret.length);
+        System.arraycopy(classicalSecret, 0, ikm, pqcSecret.length, classicalSecret.length);
+
+        HKDFBytesGenerator hkdf = new HKDFBytesGenerator(new SHA256Digest());
+        hkdf.init(new HKDFParameters(ikm, HKDF_SALT_HYBRID, HKDF_INFO_HYBRID));
+        byte[] okm = new byte[AES_KEY_LENGTH];
+        hkdf.generateBytes(okm, 0, AES_KEY_LENGTH);
+        Arrays.fill(ikm, (byte) 0);
+        return okm;
     }
 
     private byte[] performX25519Agreement(KeyPair ephemeralKp) throws GeneralSecurityException {
