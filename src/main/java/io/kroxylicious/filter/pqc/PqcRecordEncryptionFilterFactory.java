@@ -67,9 +67,10 @@ public class PqcRecordEncryptionFilterFactory
             throws PluginConfigurationException {
         Plugins.requireConfig(this, config);
 
-        LOG.info("Initializing PQC Record Encryption filter: algorithm={}, hybridMode={}, topics={}",
+        LOG.info("Initializing PQC Record Encryption filter: algorithm={}, hybridMode={}, failurePolicy={}, topics={}",
                 config.getKemAlgorithm().getDisplayName(),
                 config.isHybridMode(),
+                config.getFailurePolicy(),
                 config.getTopicPatterns());
 
         try {
@@ -102,7 +103,8 @@ public class PqcRecordEncryptionFilterFactory
         return new PqcRecordEncryptionFilter(
                 sharedContext.cryptoEngine(),
                 sharedContext.keyManager(),
-                sharedContext.topicPatterns());
+                sharedContext.topicPatterns(),
+                sharedContext.config().getFailurePolicy());
     }
 
     @Override

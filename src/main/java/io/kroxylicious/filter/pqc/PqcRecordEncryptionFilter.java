@@ -15,6 +15,7 @@
  */
 package io.kroxylicious.filter.pqc;
 
+import io.kroxylicious.filter.pqc.config.PqcEncryptionConfig.FailurePolicy;
 import io.kroxylicious.filter.pqc.crypto.PqcCryptoEngine;
 import io.kroxylicious.filter.pqc.crypto.PqcKeyManager;
 import io.kroxylicious.proxy.filter.FilterContext;
@@ -68,12 +69,14 @@ public class PqcRecordEncryptionFilter implements
     private final PqcCryptoEngine cryptoEngine;
     private final PqcKeyManager keyManager;
     private final List<Pattern> topicPatterns;
+    private final FailurePolicy failurePolicy;
 
     PqcRecordEncryptionFilter(PqcCryptoEngine cryptoEngine, PqcKeyManager keyManager,
-                              List<Pattern> topicPatterns) {
+                              List<Pattern> topicPatterns, FailurePolicy failurePolicy) {
         this.cryptoEngine = cryptoEngine;
         this.keyManager = keyManager;
         this.topicPatterns = topicPatterns;
+        this.failurePolicy = failurePolicy;
     }
 
     @Override
@@ -99,8 +102,11 @@ public class PqcRecordEncryptionFilter implements
             }
         }
         catch (Exception e) {
-            LOG.error("Failed to encrypt Produce request records", e);
-            // Forward unencrypted on failure to avoid data loss
+            if (failurePolicy == FailurePolicy.FAIL_CLOSED) {
+                LOG.error("Encryption failed (fail-closed): rejecting Produce request", e);
+                throw new RuntimeException("PQC encryption failed: " + e.getMessage(), e);
+            }
+            LOG.error("Encryption failed (fail-open): forwarding unencrypted Produce request", e);
         }
 
         return context.forwardRequest(header, request);
@@ -132,7 +138,11 @@ public class PqcRecordEncryptionFilter implements
             }
         }
         catch (Exception e) {
-            LOG.error("Failed to decrypt Fetch response records", e);
+            if (failurePolicy == FailurePolicy.FAIL_CLOSED) {
+                LOG.error("Decryption failed (fail-closed): rejecting Fetch response", e);
+                throw new RuntimeException("PQC decryption failed: " + e.getMessage(), e);
+            }
+            LOG.error("Decryption failed (fail-open): forwarding undecrypted Fetch response", e);
         }
 
         return context.forwardResponse(header, response);

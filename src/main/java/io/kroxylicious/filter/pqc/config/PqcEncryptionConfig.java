@@ -108,6 +108,16 @@ public class PqcEncryptionConfig {
         }
     }
 
+    /**
+     * Policy for handling encryption/decryption failures.
+     */
+    public enum FailurePolicy {
+        /** Fail-closed: propagate the error to the client. Prevents plaintext leakage. */
+        FAIL_CLOSED,
+        /** Fail-open: log the error and forward data as-is. Use with caution. */
+        FAIL_OPEN
+    }
+
     private final KemAlgorithm kemAlgorithm;
     private final boolean hybridMode;
     private final String publicKeyPath;
@@ -117,6 +127,7 @@ public class PqcEncryptionConfig {
     private final Map<String, String> keyProviderConfig;
     private final String activeKeyId;
     private final List<KeyConfig> keys;
+    private final FailurePolicy failurePolicy;
 
     /**
      * Backward-compatible constructor for single-key mode.
@@ -130,7 +141,24 @@ public class PqcEncryptionConfig {
             String keyProviderType,
             Map<String, String> keyProviderConfig) {
         this(kemAlgorithm, hybridMode, publicKeyPath, privateKeyPath,
-                topicPatterns, keyProviderType, keyProviderConfig, null, null);
+                topicPatterns, keyProviderType, keyProviderConfig, null, null, null);
+    }
+
+    /**
+     * Constructor with key rotation support (no failure policy).
+     */
+    public PqcEncryptionConfig(
+            KemAlgorithm kemAlgorithm,
+            Boolean hybridMode,
+            String publicKeyPath,
+            String privateKeyPath,
+            List<String> topicPatterns,
+            String keyProviderType,
+            Map<String, String> keyProviderConfig,
+            String activeKeyId,
+            List<KeyConfig> keys) {
+        this(kemAlgorithm, hybridMode, publicKeyPath, privateKeyPath,
+                topicPatterns, keyProviderType, keyProviderConfig, activeKeyId, keys, null);
     }
 
     @JsonCreator
@@ -143,7 +171,8 @@ public class PqcEncryptionConfig {
             @JsonProperty(value = "keyProviderType") String keyProviderType,
             @JsonProperty(value = "keyProviderConfig") Map<String, String> keyProviderConfig,
             @JsonProperty(value = "activeKeyId") String activeKeyId,
-            @JsonProperty(value = "keys") List<KeyConfig> keys) {
+            @JsonProperty(value = "keys") List<KeyConfig> keys,
+            @JsonProperty(value = "failurePolicy") FailurePolicy failurePolicy) {
         this.kemAlgorithm = kemAlgorithm != null ? kemAlgorithm : KemAlgorithm.ML_KEM_768;
         this.hybridMode = hybridMode != null ? hybridMode : true;
         this.publicKeyPath = publicKeyPath;
@@ -153,6 +182,7 @@ public class PqcEncryptionConfig {
         this.keyProviderConfig = keyProviderConfig != null ? Map.copyOf(keyProviderConfig) : Map.of();
         this.activeKeyId = activeKeyId;
         this.keys = keys != null ? Collections.unmodifiableList(List.copyOf(keys)) : null;
+        this.failurePolicy = failurePolicy != null ? failurePolicy : FailurePolicy.FAIL_CLOSED;
     }
 
     public KemAlgorithm getKemAlgorithm() {
@@ -189,5 +219,9 @@ public class PqcEncryptionConfig {
 
     public List<KeyConfig> getKeys() {
         return keys;
+    }
+
+    public FailurePolicy getFailurePolicy() {
+        return failurePolicy;
     }
 }
