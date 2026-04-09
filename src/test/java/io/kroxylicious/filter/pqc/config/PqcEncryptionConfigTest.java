@@ -16,6 +16,7 @@
 package io.kroxylicious.filter.pqc.config;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.kroxylicious.filter.pqc.config.PqcEncryptionConfig.FailurePolicy;
 import io.kroxylicious.filter.pqc.config.PqcEncryptionConfig.KemAlgorithm;
 import io.kroxylicious.filter.pqc.config.PqcEncryptionConfig.KeyConfig;
 import org.junit.jupiter.api.Test;
@@ -246,6 +247,54 @@ class PqcEncryptionConfigTest {
         assertThatThrownBy(() -> new KeyConfig("", "/pub.der", "/priv.der"))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("id");
+    }
+
+    @Test
+    void shouldDefaultFailurePolicyToFailClosed() {
+        PqcEncryptionConfig config = new PqcEncryptionConfig(
+                null, null, "/tmp/pub.key", "/tmp/priv.key", null, null, null);
+
+        assertThat(config.getFailurePolicy()).isEqualTo(FailurePolicy.FAIL_CLOSED);
+    }
+
+    @Test
+    void shouldAcceptExplicitFailurePolicy() {
+        PqcEncryptionConfig config = new PqcEncryptionConfig(
+                null, null, null, null, null, null, null, null, null,
+                FailurePolicy.FAIL_OPEN);
+
+        assertThat(config.getFailurePolicy()).isEqualTo(FailurePolicy.FAIL_OPEN);
+    }
+
+    @Test
+    void shouldDeserializeFailurePolicyFromJson() throws Exception {
+        String json = """
+                {
+                    "publicKeyPath": "/keys/pub.der",
+                    "privateKeyPath": "/keys/priv.der",
+                    "failurePolicy": "FAIL_OPEN"
+                }
+                """;
+
+        ObjectMapper mapper = new ObjectMapper();
+        PqcEncryptionConfig config = mapper.readValue(json, PqcEncryptionConfig.class);
+
+        assertThat(config.getFailurePolicy()).isEqualTo(FailurePolicy.FAIL_OPEN);
+    }
+
+    @Test
+    void shouldDefaultFailurePolicyInJson() throws Exception {
+        String json = """
+                {
+                    "publicKeyPath": "/keys/pub.der",
+                    "privateKeyPath": "/keys/priv.der"
+                }
+                """;
+
+        ObjectMapper mapper = new ObjectMapper();
+        PqcEncryptionConfig config = mapper.readValue(json, PqcEncryptionConfig.class);
+
+        assertThat(config.getFailurePolicy()).isEqualTo(FailurePolicy.FAIL_CLOSED);
     }
 
     @Test
