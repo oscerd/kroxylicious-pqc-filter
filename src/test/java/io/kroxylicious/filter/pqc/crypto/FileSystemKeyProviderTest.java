@@ -17,6 +17,7 @@ package io.kroxylicious.filter.pqc.crypto;
 
 import io.kroxylicious.filter.pqc.config.PqcEncryptionConfig;
 import io.kroxylicious.filter.pqc.config.PqcEncryptionConfig.KemAlgorithm;
+import io.kroxylicious.filter.pqc.config.PqcEncryptionConfig.KeyConfig;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -24,6 +25,7 @@ import java.nio.file.Path;
 import java.security.GeneralSecurityException;
 import java.security.KeyPair;
 import java.util.Iterator;
+import java.util.List;
 import java.util.ServiceConfigurationError;
 import java.util.ServiceLoader;
 
@@ -90,8 +92,16 @@ class FileSystemKeyProviderTest {
     }
 
     @Test
-    void shouldReturnDefaultKeyId() {
+    void shouldReturnDefaultKeyId() throws Exception {
+        Path pubKeyPath = tempDir.resolve("pub.der");
+        Path privKeyPath = tempDir.resolve("priv.der");
+        PqcEncryptionConfig config = new PqcEncryptionConfig(
+                KemAlgorithm.ML_KEM_768, false,
+                pubKeyPath.toString(), privKeyPath.toString(), null, null, null);
+
         FileSystemKeyProvider provider = new FileSystemKeyProvider();
+        provider.configure(config);
+
         assertThat(provider.listKeyIds()).containsExactly("default");
     }
 
@@ -292,6 +302,149 @@ class FileSystemKeyProviderTest {
         byte[] decrypted = engine2.decrypt(encrypted);
 
         // Then
+        assertThat(decrypted).isEqualTo(plaintext);
+    }
+
+    // --- Multi-key rotation tests ---
+
+    @Test
+    void shouldLoadMultipleKeys() throws Exception {
+        // Given - generate two key pairs
+        KeyPair kp1 = PqcCryptoEngine.generateKeyPair(KemAlgorithm.ML_KEM_768);
+        KeyPair kp2 = PqcCryptoEngine.generateKeyPair(KemAlgorithm.ML_KEM_768);
+
+        Path key1Dir = tempDir.resolve("key1");
+        Path key2Dir = tempDir.resolve("key2");
+        key1Dir.toFile().mkdirs();
+        key2Dir.toFile().mkdirs();
+
+        PqcCryptoEngine.saveKey(key1Dir.resolve("pub.der"), kp1.getPublic().getEncoded());
+        PqcCryptoEngine.saveKey(key1Dir.resolve("priv.der"), kp1.getPrivate().getEncoded());
+        PqcCryptoEngine.saveKey(key2Dir.resolve("pub.der"), kp2.getPublic().getEncoded());
+        PqcCryptoEngine.saveKey(key2Dir.resolve("priv.der"), kp2.getPrivate().getEncoded());
+
+        List<KeyConfig> keys = List.of(
+                new KeyConfig("current", key1Dir.resolve("pub.der").toString(),
+                        key1Dir.resolve("priv.der").toString()),
+                new KeyConfig("retired", key2Dir.resolve("pub.der").toString(),
+                        key2Dir.resolve("priv.der").toString()));
+
+        PqcEncryptionConfig config = new PqcEncryptionConfig(
+                KemAlgorithm.ML_KEM_768, false, null, null, null, null, null,
+                "current", keys);
+
+        FileSystemKeyProvider provider = new FileSystemKeyProvider();
+
+        // When
+        provider.configure(config);
+
+        // Then
+        assertThat(provider.listKeyIds()).containsExactly("current", "retired");
+        KeyPair active = provider.getActiveKeyPair(KemAlgorithm.ML_KEM_768);
+        assertThat(active.getPublic().getEncoded()).isEqualTo(kp1.getPublic().getEncoded());
+    }
+
+    @Test
+    void shouldReturnRetiredKeyPairById() throws Exception {
+        // Given - generate two key pairs
+        KeyPair kp1 = PqcCryptoEngine.generateKeyPair(KemAlgorithm.ML_KEM_768);
+        KeyPair kp2 = PqcCryptoEngine.generateKeyPair(KemAlgorithm.ML_KEM_768);
+
+        Path key1Dir = tempDir.resolve("key1");
+        Path key2Dir = tempDir.resolve("key2");
+        key1Dir.toFile().mkdirs();
+        key2Dir.toFile().mkdirs();
+
+        PqcCryptoEngine.saveKey(key1Dir.resolve("pub.der"), kp1.getPublic().getEncoded());
+        PqcCryptoEngine.saveKey(key1Dir.resolve("priv.der"), kp1.getPrivate().getEncoded());
+        PqcCryptoEngine.saveKey(key2Dir.resolve("pub.der"), kp2.getPublic().getEncoded());
+        PqcCryptoEngine.saveKey(key2Dir.resolve("priv.der"), kp2.getPrivate().getEncoded());
+
+        List<KeyConfig> keys = List.of(
+                new KeyConfig("current", key1Dir.resolve("pub.der").toString(),
+                        key1Dir.resolve("priv.der").toString()),
+                new KeyConfig("retired", key2Dir.resolve("pub.der").toString(),
+                        key2Dir.resolve("priv.der").toString()));
+
+        PqcEncryptionConfig config = new PqcEncryptionConfig(
+                KemAlgorithm.ML_KEM_768, false, null, null, null, null, null,
+                "current", keys);
+
+        FileSystemKeyProvider provider = new FileSystemKeyProvider();
+        provider.configure(config);
+
+        // When
+        KeyPair retired = provider.getKeyPairById("retired", KemAlgorithm.ML_KEM_768);
+
+        // Then
+        assertThat(retired.getPublic().getEncoded()).isEqualTo(kp2.getPublic().getEncoded());
+        assertThat(retired.getPrivate().getEncoded()).isEqualTo(kp2.getPrivate().getEncoded());
+    }
+
+    @Test
+    void shouldRejectMissingActiveKeyIdInMultiKeyMode() throws Exception {
+        KeyPair kp = PqcCryptoEngine.generateKeyPair(KemAlgorithm.ML_KEM_768);
+        Path keyDir = tempDir.resolve("key1");
+        keyDir.toFile().mkdirs();
+        PqcCryptoEngine.saveKey(keyDir.resolve("pub.der"), kp.getPublic().getEncoded());
+        PqcCryptoEngine.saveKey(keyDir.resolve("priv.der"), kp.getPrivate().getEncoded());
+
+        List<KeyConfig> keys = List.of(
+                new KeyConfig("key1", keyDir.resolve("pub.der").toString(),
+                        keyDir.resolve("priv.der").toString()));
+
+        PqcEncryptionConfig config = new PqcEncryptionConfig(
+                KemAlgorithm.ML_KEM_768, false, null, null, null, null, null,
+                null, keys);
+
+        FileSystemKeyProvider provider = new FileSystemKeyProvider();
+
+        assertThatThrownBy(() -> provider.configure(config))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("activeKeyId is required");
+    }
+
+    @Test
+    void shouldRejectActiveKeyIdNotInKeysList() throws Exception {
+        KeyPair kp = PqcCryptoEngine.generateKeyPair(KemAlgorithm.ML_KEM_768);
+        Path keyDir = tempDir.resolve("key1");
+        keyDir.toFile().mkdirs();
+        PqcCryptoEngine.saveKey(keyDir.resolve("pub.der"), kp.getPublic().getEncoded());
+        PqcCryptoEngine.saveKey(keyDir.resolve("priv.der"), kp.getPrivate().getEncoded());
+
+        List<KeyConfig> keys = List.of(
+                new KeyConfig("key1", keyDir.resolve("pub.der").toString(),
+                        keyDir.resolve("priv.der").toString()));
+
+        PqcEncryptionConfig config = new PqcEncryptionConfig(
+                KemAlgorithm.ML_KEM_768, false, null, null, null, null, null,
+                "nonexistent", keys);
+
+        FileSystemKeyProvider provider = new FileSystemKeyProvider();
+
+        assertThatThrownBy(() -> provider.configure(config))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("does not match any configured key");
+    }
+
+    @Test
+    void shouldSupportKeyRotationRoundtrip() throws Exception {
+        // Given - two key pairs: encrypt with key1, decrypt with key1 after rotating to key2
+        KeyPair kp1 = PqcCryptoEngine.generateKeyPair(KemAlgorithm.ML_KEM_768);
+        KeyPair kp2 = PqcCryptoEngine.generateKeyPair(KemAlgorithm.ML_KEM_768);
+
+        // Encrypt with key1
+        PqcCryptoEngine engine1 = new PqcCryptoEngine(
+                KemAlgorithm.ML_KEM_768, false, kp1.getPublic(), kp1.getPrivate());
+        byte[] plaintext = "key rotation test message".getBytes();
+        byte[] encrypted = engine1.encrypt(plaintext);
+
+        // Rotate: key2 is now active, key1 is retired
+        // Decrypt using key1 (retired) — verify the old records can still be read
+        PqcCryptoEngine engine1Retired = new PqcCryptoEngine(
+                KemAlgorithm.ML_KEM_768, false, kp1.getPublic(), kp1.getPrivate());
+        byte[] decrypted = engine1Retired.decrypt(encrypted);
+
         assertThat(decrypted).isEqualTo(plaintext);
     }
 

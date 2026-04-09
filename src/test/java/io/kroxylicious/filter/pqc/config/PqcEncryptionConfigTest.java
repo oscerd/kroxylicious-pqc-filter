@@ -17,12 +17,14 @@ package io.kroxylicious.filter.pqc.config;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.kroxylicious.filter.pqc.config.PqcEncryptionConfig.KemAlgorithm;
+import io.kroxylicious.filter.pqc.config.PqcEncryptionConfig.KeyConfig;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class PqcEncryptionConfigTest {
 
@@ -160,6 +162,90 @@ class PqcEncryptionConfigTest {
 
         // Then
         assertThat(config.getTopicPatterns()).isUnmodifiable();
+    }
+
+    @Test
+    void shouldDefaultActiveKeyIdAndKeysToNull() {
+        PqcEncryptionConfig config = new PqcEncryptionConfig(
+                null, null, "/tmp/pub.key", "/tmp/priv.key", null, null, null);
+
+        assertThat(config.getActiveKeyId()).isNull();
+        assertThat(config.getKeys()).isNull();
+    }
+
+    @Test
+    void shouldAcceptActiveKeyIdAndKeys() {
+        List<KeyConfig> keys = List.of(
+                new KeyConfig("key-2024-q4", "/keys/current-pub.der", "/keys/current-priv.der"),
+                new KeyConfig("key-2024-q3", "/keys/prev-pub.der", "/keys/prev-priv.der"));
+
+        PqcEncryptionConfig config = new PqcEncryptionConfig(
+                KemAlgorithm.ML_KEM_768, null, null, null, null, null, null,
+                "key-2024-q4", keys);
+
+        assertThat(config.getActiveKeyId()).isEqualTo("key-2024-q4");
+        assertThat(config.getKeys()).hasSize(2);
+        assertThat(config.getKeys().get(0).getId()).isEqualTo("key-2024-q4");
+        assertThat(config.getKeys().get(1).getId()).isEqualTo("key-2024-q3");
+    }
+
+    @Test
+    void shouldMakeKeysListImmutable() {
+        List<KeyConfig> keys = List.of(
+                new KeyConfig("key-1", "/keys/pub.der", "/keys/priv.der"));
+
+        PqcEncryptionConfig config = new PqcEncryptionConfig(
+                null, null, null, null, null, null, null, "key-1", keys);
+
+        assertThat(config.getKeys()).isUnmodifiable();
+    }
+
+    @Test
+    void shouldDeserializeMultiKeyConfigFromJson() throws Exception {
+        String json = """
+                {
+                    "kemAlgorithm": "ML_KEM_768",
+                    "activeKeyId": "key-2024-q4",
+                    "keys": [
+                        {
+                            "id": "key-2024-q4",
+                            "publicKeyPath": "/keys/current-pub.der",
+                            "privateKeyPath": "/keys/current-priv.der"
+                        },
+                        {
+                            "id": "key-2024-q3",
+                            "publicKeyPath": "/keys/prev-pub.der",
+                            "privateKeyPath": "/keys/prev-priv.der"
+                        }
+                    ]
+                }
+                """;
+
+        ObjectMapper mapper = new ObjectMapper();
+        PqcEncryptionConfig config = mapper.readValue(json, PqcEncryptionConfig.class);
+
+        assertThat(config.getActiveKeyId()).isEqualTo("key-2024-q4");
+        assertThat(config.getKeys()).hasSize(2);
+        assertThat(config.getKeys().get(0).getId()).isEqualTo("key-2024-q4");
+        assertThat(config.getKeys().get(0).getPublicKeyPath()).isEqualTo("/keys/current-pub.der");
+        assertThat(config.getKeys().get(0).getPrivateKeyPath()).isEqualTo("/keys/current-priv.der");
+        assertThat(config.getKeys().get(1).getId()).isEqualTo("key-2024-q3");
+        assertThat(config.getKeys().get(1).getPublicKeyPath()).isEqualTo("/keys/prev-pub.der");
+        assertThat(config.getKeys().get(1).getPrivateKeyPath()).isEqualTo("/keys/prev-priv.der");
+    }
+
+    @Test
+    void keyConfigShouldRejectNullId() {
+        assertThatThrownBy(() -> new KeyConfig(null, "/pub.der", "/priv.der"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("id");
+    }
+
+    @Test
+    void keyConfigShouldRejectEmptyId() {
+        assertThatThrownBy(() -> new KeyConfig("", "/pub.der", "/priv.der"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("id");
     }
 
     @Test

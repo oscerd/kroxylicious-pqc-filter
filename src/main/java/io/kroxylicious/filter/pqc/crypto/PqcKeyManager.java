@@ -70,6 +70,8 @@ public class PqcKeyManager {
     /**
      * Create a PqcCryptoEngine configured with the active key pair from this key manager's provider.
      * The engine is cached by key ID for reuse during decryption.
+     * All other configured keys are also pre-loaded into the cache to support
+     * decryption of records encrypted with retired keys.
      */
     public PqcCryptoEngine createEngine(boolean hybridMode) throws GeneralSecurityException {
         KeyPair keyPair = keyProvider.getActiveKeyPair(algorithm);
@@ -79,7 +81,29 @@ public class PqcKeyManager {
         this.activeEngine = engine;
         engineCache.put(engine.getKeyId(), engine);
         LOG.info("Active encryption key ID: 0x{}", Integer.toHexString(engine.getKeyId()));
+
+        preloadRetiredKeys(hybridMode, x25519KeyPair);
+
         return engine;
+    }
+
+    private void preloadRetiredKeys(boolean hybridMode, KeyPair x25519KeyPair) {
+        for (String keyId : keyProvider.listKeyIds()) {
+            try {
+                KeyPair kp = keyProvider.getKeyPairById(keyId, algorithm);
+                int computedId = PqcCryptoEngine.computeKeyId(kp.getPublic());
+                if (!engineCache.containsKey(computedId)) {
+                    PqcCryptoEngine retiredEngine = new PqcCryptoEngine(algorithm, hybridMode,
+                            kp.getPublic(), kp.getPrivate(), x25519KeyPair);
+                    engineCache.put(retiredEngine.getKeyId(), retiredEngine);
+                    LOG.info("Pre-loaded retired key ID: 0x{} (config ID: {})",
+                            Integer.toHexString(computedId), keyId);
+                }
+            }
+            catch (GeneralSecurityException e) {
+                LOG.warn("Failed to pre-load key for config ID '{}': {}", keyId, e.getMessage());
+            }
+        }
     }
 
     /**

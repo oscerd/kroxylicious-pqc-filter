@@ -18,6 +18,7 @@ package io.kroxylicious.filter.pqc.config;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -73,6 +74,40 @@ public class PqcEncryptionConfig {
         }
     }
 
+    /**
+     * Configuration for a single key entry in multi-key rotation mode.
+     */
+    public static class KeyConfig {
+        private final String id;
+        private final String publicKeyPath;
+        private final String privateKeyPath;
+
+        @JsonCreator
+        public KeyConfig(
+                @JsonProperty(value = "id", required = true) String id,
+                @JsonProperty(value = "publicKeyPath") String publicKeyPath,
+                @JsonProperty(value = "privateKeyPath") String privateKeyPath) {
+            if (id == null || id.isEmpty()) {
+                throw new IllegalArgumentException("Key config 'id' is required");
+            }
+            this.id = id;
+            this.publicKeyPath = publicKeyPath;
+            this.privateKeyPath = privateKeyPath;
+        }
+
+        public String getId() {
+            return id;
+        }
+
+        public String getPublicKeyPath() {
+            return publicKeyPath;
+        }
+
+        public String getPrivateKeyPath() {
+            return privateKeyPath;
+        }
+    }
+
     private final KemAlgorithm kemAlgorithm;
     private final boolean hybridMode;
     private final String publicKeyPath;
@@ -80,6 +115,23 @@ public class PqcEncryptionConfig {
     private final List<String> topicPatterns;
     private final String keyProviderType;
     private final Map<String, String> keyProviderConfig;
+    private final String activeKeyId;
+    private final List<KeyConfig> keys;
+
+    /**
+     * Backward-compatible constructor for single-key mode.
+     */
+    public PqcEncryptionConfig(
+            KemAlgorithm kemAlgorithm,
+            Boolean hybridMode,
+            String publicKeyPath,
+            String privateKeyPath,
+            List<String> topicPatterns,
+            String keyProviderType,
+            Map<String, String> keyProviderConfig) {
+        this(kemAlgorithm, hybridMode, publicKeyPath, privateKeyPath,
+                topicPatterns, keyProviderType, keyProviderConfig, null, null);
+    }
 
     @JsonCreator
     public PqcEncryptionConfig(
@@ -89,7 +141,9 @@ public class PqcEncryptionConfig {
             @JsonProperty(value = "privateKeyPath") String privateKeyPath,
             @JsonProperty(value = "topicPatterns") List<String> topicPatterns,
             @JsonProperty(value = "keyProviderType") String keyProviderType,
-            @JsonProperty(value = "keyProviderConfig") Map<String, String> keyProviderConfig) {
+            @JsonProperty(value = "keyProviderConfig") Map<String, String> keyProviderConfig,
+            @JsonProperty(value = "activeKeyId") String activeKeyId,
+            @JsonProperty(value = "keys") List<KeyConfig> keys) {
         this.kemAlgorithm = kemAlgorithm != null ? kemAlgorithm : KemAlgorithm.ML_KEM_768;
         this.hybridMode = hybridMode != null ? hybridMode : true;
         this.publicKeyPath = publicKeyPath;
@@ -97,6 +151,8 @@ public class PqcEncryptionConfig {
         this.topicPatterns = topicPatterns != null ? List.copyOf(topicPatterns) : List.of(".*");
         this.keyProviderType = keyProviderType != null ? keyProviderType : "filesystem";
         this.keyProviderConfig = keyProviderConfig != null ? Map.copyOf(keyProviderConfig) : Map.of();
+        this.activeKeyId = activeKeyId;
+        this.keys = keys != null ? Collections.unmodifiableList(List.copyOf(keys)) : null;
     }
 
     public KemAlgorithm getKemAlgorithm() {
@@ -125,5 +181,13 @@ public class PqcEncryptionConfig {
 
     public Map<String, String> getKeyProviderConfig() {
         return keyProviderConfig;
+    }
+
+    public String getActiveKeyId() {
+        return activeKeyId;
+    }
+
+    public List<KeyConfig> getKeys() {
+        return keys;
     }
 }
