@@ -17,6 +17,7 @@ package io.kroxylicious.filter.pqc.crypto;
 
 import io.kroxylicious.filter.pqc.config.PqcEncryptionConfig;
 import io.kroxylicious.filter.pqc.config.PqcEncryptionConfig.KemAlgorithm;
+import io.kroxylicious.filter.pqc.config.PqcEncryptionConfig.KeyConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -27,7 +28,10 @@ import java.security.GeneralSecurityException;
 import java.security.KeyPair;
 import java.security.PrivateKey;
 import java.security.PublicKey;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Default {@link KeyProvider} implementation that loads ML-KEM key pairs
@@ -40,9 +44,14 @@ import java.util.List;
  *   <li>Private key: PKCS#8 PrivateKeyInfo format</li>
  * </ul>
  *
- * <p>This provider manages a single key pair identified by the key ID
- * {@value #DEFAULT_KEY_ID}. Key rotation with multiple key pairs is
- * not supported by this provider.
+ * <p>Supports two modes:
+ * <ul>
+ *   <li><strong>Single-key mode:</strong> Uses {@code publicKeyPath} and
+ *       {@code privateKeyPath} from the config. Key ID is {@value #DEFAULT_KEY_ID}.</li>
+ *   <li><strong>Multi-key mode:</strong> Uses the {@code keys} list from the config
+ *       with an {@code activeKeyId} to identify the current encryption key.
+ *       Retired keys are available for decryption.</li>
+ * </ul>
  */
 public class FileSystemKeyProvider implements KeyProvider {
 
@@ -50,9 +59,19 @@ public class FileSystemKeyProvider implements KeyProvider {
 
     static final String DEFAULT_KEY_ID = "default";
 
-    private PublicKey publicKey;
-    private PrivateKey privateKey;
+    private final Map<String, KeyEntry> keyEntries = new LinkedHashMap<>();
+    private String activeKeyId;
     private KeyPair x25519KeyPair;
+
+    static class KeyEntry {
+        final PublicKey publicKey;
+        final PrivateKey privateKey;
+
+        KeyEntry(PublicKey publicKey, PrivateKey privateKey) {
+            this.publicKey = publicKey;
+            this.privateKey = privateKey;
+        }
+    }
 
     @Override
     public String type() {
@@ -62,6 +81,18 @@ public class FileSystemKeyProvider implements KeyProvider {
     @Override
     public void configure(PqcEncryptionConfig config) throws GeneralSecurityException, IOException {
         KemAlgorithm algorithm = config.getKemAlgorithm();
+        List<KeyConfig> keys = config.getKeys();
+
+        if (keys != null && !keys.isEmpty()) {
+            configureMultiKey(config, algorithm);
+        }
+        else {
+            configureSingleKey(config, algorithm);
+        }
+    }
+
+    private void configureSingleKey(PqcEncryptionConfig config, KemAlgorithm algorithm)
+            throws GeneralSecurityException, IOException {
         String publicKeyPathStr = config.getPublicKeyPath();
         String privateKeyPathStr = config.getPrivateKeyPath();
 
@@ -75,56 +106,145 @@ public class FileSystemKeyProvider implements KeyProvider {
         Path pubKeyPath = Path.of(publicKeyPathStr);
         Path privKeyPath = Path.of(privateKeyPathStr);
 
+        PublicKey publicKey;
+        PrivateKey privateKey;
+
         if (Files.exists(pubKeyPath) && Files.exists(privKeyPath)) {
             LOG.info("Loading existing ML-KEM key pair ({}) from {} and {}",
                     algorithm.getDisplayName(), pubKeyPath, privKeyPath);
-            this.publicKey = PqcCryptoEngine.loadPublicKey(pubKeyPath);
-            this.privateKey = PqcCryptoEngine.loadPrivateKey(privKeyPath);
+            publicKey = PqcCryptoEngine.loadPublicKey(pubKeyPath);
+            privateKey = PqcCryptoEngine.loadPrivateKey(privKeyPath);
         }
         else {
             LOG.info("Generating new ML-KEM key pair ({}) and saving to {} and {}",
                     algorithm.getDisplayName(), pubKeyPath, privKeyPath);
             KeyPair keyPair = PqcCryptoEngine.generateKeyPair(algorithm);
-            this.publicKey = keyPair.getPublic();
-            this.privateKey = keyPair.getPrivate();
+            publicKey = keyPair.getPublic();
+            privateKey = keyPair.getPrivate();
 
             PqcCryptoEngine.saveKey(pubKeyPath, publicKey.getEncoded());
             PqcCryptoEngine.saveKey(privKeyPath, privateKey.getEncoded());
         }
 
-        if (config.isHybridMode()) {
-            Path x25519PubPath = pubKeyPath.getParent().resolve("x25519-public.der");
-            Path x25519PrivPath = pubKeyPath.getParent().resolve("x25519-private.der");
+        this.activeKeyId = DEFAULT_KEY_ID;
+        keyEntries.put(DEFAULT_KEY_ID, new KeyEntry(publicKey, privateKey));
 
-            if (Files.exists(x25519PubPath) && Files.exists(x25519PrivPath)) {
-                LOG.info("Loading existing X25519 key pair from {} and {}", x25519PubPath, x25519PrivPath);
-                this.x25519KeyPair = new KeyPair(
-                        PqcCryptoEngine.loadX25519PublicKey(x25519PubPath),
-                        PqcCryptoEngine.loadX25519PrivateKey(x25519PrivPath));
+        loadX25519Keys(config, pubKeyPath.getParent());
+    }
+
+    private void configureMultiKey(PqcEncryptionConfig config, KemAlgorithm algorithm)
+            throws GeneralSecurityException, IOException {
+        List<KeyConfig> keys = config.getKeys();
+        String configActiveKeyId = config.getActiveKeyId();
+
+        if (configActiveKeyId == null || configActiveKeyId.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "activeKeyId is required when multiple keys are configured");
+        }
+
+        boolean activeKeyFound = false;
+        Path x25519Dir = null;
+
+        for (KeyConfig keyConfig : keys) {
+            String keyId = keyConfig.getId();
+            boolean isActive = keyId.equals(configActiveKeyId);
+
+            String pubPathStr = keyConfig.getPublicKeyPath();
+            String privPathStr = keyConfig.getPrivateKeyPath();
+
+            if (privPathStr == null || privPathStr.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "privateKeyPath is required for key '" + keyId + "'");
             }
-            else {
-                LOG.info("Generating new X25519 key pair and saving to {} and {}", x25519PubPath, x25519PrivPath);
-                this.x25519KeyPair = PqcCryptoEngine.generateX25519KeyPair();
-                PqcCryptoEngine.saveKey(x25519PubPath, x25519KeyPair.getPublic().getEncoded());
-                PqcCryptoEngine.saveKey(x25519PrivPath, x25519KeyPair.getPrivate().getEncoded());
+            if (pubPathStr == null || pubPathStr.isEmpty()) {
+                if (isActive) {
+                    throw new IllegalArgumentException(
+                            "publicKeyPath is required for active key '" + keyId + "'");
+                }
+                throw new IllegalArgumentException(
+                        "publicKeyPath is required for key '" + keyId
+                                + "' (needed for key ID computation)");
             }
+
+            Path pubKeyPath = Path.of(pubPathStr);
+            Path privKeyPath = Path.of(privPathStr);
+
+            if (!Files.exists(pubKeyPath)) {
+                throw new IllegalArgumentException(
+                        "Public key file not found for key '" + keyId + "': " + pubKeyPath);
+            }
+            if (!Files.exists(privKeyPath)) {
+                throw new IllegalArgumentException(
+                        "Private key file not found for key '" + keyId + "': " + privKeyPath);
+            }
+
+            LOG.info("Loading ML-KEM key pair ({}) for key '{}' from {} and {}",
+                    algorithm.getDisplayName(), keyId, pubKeyPath, privKeyPath);
+
+            PublicKey publicKey = PqcCryptoEngine.loadPublicKey(pubKeyPath);
+            PrivateKey privateKey = PqcCryptoEngine.loadPrivateKey(privKeyPath);
+            keyEntries.put(keyId, new KeyEntry(publicKey, privateKey));
+
+            if (isActive) {
+                activeKeyFound = true;
+                x25519Dir = pubKeyPath.getParent();
+            }
+        }
+
+        if (!activeKeyFound) {
+            throw new IllegalArgumentException(
+                    "activeKeyId '" + configActiveKeyId + "' does not match any configured key");
+        }
+
+        this.activeKeyId = configActiveKeyId;
+
+        loadX25519Keys(config, x25519Dir);
+
+        LOG.info("Configured {} key(s), active key: '{}'", keys.size(), activeKeyId);
+    }
+
+    private void loadX25519Keys(PqcEncryptionConfig config, Path keyDir)
+            throws GeneralSecurityException, IOException {
+        if (!config.isHybridMode() || keyDir == null) {
+            return;
+        }
+
+        Path x25519PubPath = keyDir.resolve("x25519-public.der");
+        Path x25519PrivPath = keyDir.resolve("x25519-private.der");
+
+        if (Files.exists(x25519PubPath) && Files.exists(x25519PrivPath)) {
+            LOG.info("Loading existing X25519 key pair from {} and {}", x25519PubPath, x25519PrivPath);
+            this.x25519KeyPair = new KeyPair(
+                    PqcCryptoEngine.loadX25519PublicKey(x25519PubPath),
+                    PqcCryptoEngine.loadX25519PrivateKey(x25519PrivPath));
+        }
+        else {
+            LOG.info("Generating new X25519 key pair and saving to {} and {}", x25519PubPath, x25519PrivPath);
+            this.x25519KeyPair = PqcCryptoEngine.generateX25519KeyPair();
+            PqcCryptoEngine.saveKey(x25519PubPath, x25519KeyPair.getPublic().getEncoded());
+            PqcCryptoEngine.saveKey(x25519PrivPath, x25519KeyPair.getPrivate().getEncoded());
         }
     }
 
     @Override
     public KeyPair getActiveKeyPair(KemAlgorithm algorithm) throws GeneralSecurityException {
         ensureConfigured();
-        return new KeyPair(publicKey, privateKey);
+        KeyEntry entry = keyEntries.get(activeKeyId);
+        if (entry == null) {
+            throw new GeneralSecurityException("Active key '" + activeKeyId + "' not found");
+        }
+        return new KeyPair(entry.publicKey, entry.privateKey);
     }
 
     @Override
     public KeyPair getKeyPairById(String keyId, KemAlgorithm algorithm) throws GeneralSecurityException {
         ensureConfigured();
-        if (!DEFAULT_KEY_ID.equals(keyId)) {
+        KeyEntry entry = keyEntries.get(keyId);
+        if (entry == null) {
             throw new GeneralSecurityException(
-                    "Unknown key ID '" + keyId + "'. FileSystemKeyProvider only supports key ID '" + DEFAULT_KEY_ID + "'");
+                    "Unknown key ID '" + keyId + "'. Available keys: " + keyEntries.keySet());
         }
-        return new KeyPair(publicKey, privateKey);
+        return new KeyPair(entry.publicKey, entry.privateKey);
     }
 
     @Override
@@ -134,11 +254,11 @@ public class FileSystemKeyProvider implements KeyProvider {
 
     @Override
     public List<String> listKeyIds() {
-        return List.of(DEFAULT_KEY_ID);
+        return List.copyOf(keyEntries.keySet());
     }
 
     private void ensureConfigured() {
-        if (publicKey == null || privateKey == null) {
+        if (keyEntries.isEmpty()) {
             throw new IllegalStateException("KeyProvider has not been configured. Call configure() first.");
         }
     }
