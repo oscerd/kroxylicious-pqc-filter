@@ -101,7 +101,7 @@ public class PqcRecordEncryptionFilter implements
                 }
             }
         }
-        catch (Exception e) {
+        catch (GeneralSecurityException e) {
             if (failurePolicy == FailurePolicy.FAIL_CLOSED) {
                 LOG.error("Encryption failed (fail-closed): rejecting Produce request", e);
                 throw new RuntimeException("PQC encryption failed: " + e.getMessage(), e);
@@ -137,7 +137,7 @@ public class PqcRecordEncryptionFilter implements
                 }
             }
         }
-        catch (Exception e) {
+        catch (GeneralSecurityException e) {
             if (failurePolicy == FailurePolicy.FAIL_CLOSED) {
                 LOG.error("Decryption failed (fail-closed): rejecting Fetch response", e);
                 throw new RuntimeException("PQC decryption failed: " + e.getMessage(), e);
