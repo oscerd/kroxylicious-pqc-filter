@@ -372,4 +372,74 @@ class PqcCryptoEngineTest {
         // Then
         assertThat(engine.getKeyId()).isEqualTo(PqcCryptoEngine.computeKeyId(keyPair.getPublic()));
     }
+
+    @Test
+    void hybridKeyIdShouldIncludeBothKeys() throws Exception {
+        // Given
+        KeyPair mlKemKeyPair = PqcCryptoEngine.generateKeyPair(KemAlgorithm.ML_KEM_768);
+        KeyPair x25519KeyPair = PqcCryptoEngine.generateX25519KeyPair();
+
+        // When
+        PqcCryptoEngine engine = new PqcCryptoEngine(
+                KemAlgorithm.ML_KEM_768, true,
+                mlKemKeyPair.getPublic(), mlKemKeyPair.getPrivate(), x25519KeyPair);
+
+        // Then - hybrid key ID should use both keys, not just ML-KEM
+        int pqcOnlyKeyId = PqcCryptoEngine.computeKeyId(mlKemKeyPair.getPublic());
+        int hybridKeyId = PqcCryptoEngine.computeKeyId(mlKemKeyPair.getPublic(), x25519KeyPair.getPublic());
+        assertThat(engine.getKeyId()).isEqualTo(hybridKeyId);
+        assertThat(engine.getKeyId()).isNotEqualTo(pqcOnlyKeyId);
+    }
+
+    @Test
+    void hybridKeyIdShouldChangeWhenX25519KeyChanges() throws Exception {
+        // Given - same ML-KEM key, different X25519 keys
+        KeyPair mlKemKeyPair = PqcCryptoEngine.generateKeyPair(KemAlgorithm.ML_KEM_768);
+        KeyPair x25519KeyPair1 = PqcCryptoEngine.generateX25519KeyPair();
+        KeyPair x25519KeyPair2 = PqcCryptoEngine.generateX25519KeyPair();
+
+        // When
+        PqcCryptoEngine engine1 = new PqcCryptoEngine(
+                KemAlgorithm.ML_KEM_768, true,
+                mlKemKeyPair.getPublic(), mlKemKeyPair.getPrivate(), x25519KeyPair1);
+        PqcCryptoEngine engine2 = new PqcCryptoEngine(
+                KemAlgorithm.ML_KEM_768, true,
+                mlKemKeyPair.getPublic(), mlKemKeyPair.getPrivate(), x25519KeyPair2);
+
+        // Then - key IDs should differ because X25519 keys differ
+        assertThat(engine1.getKeyId()).isNotEqualTo(engine2.getKeyId());
+    }
+
+    @Test
+    void hybridKeyIdShouldBeDeterministic() throws Exception {
+        // Given
+        KeyPair mlKemKeyPair = PqcCryptoEngine.generateKeyPair(KemAlgorithm.ML_KEM_768);
+        KeyPair x25519KeyPair = PqcCryptoEngine.generateX25519KeyPair();
+
+        // When
+        int keyId1 = PqcCryptoEngine.computeKeyId(mlKemKeyPair.getPublic(), x25519KeyPair.getPublic());
+        int keyId2 = PqcCryptoEngine.computeKeyId(mlKemKeyPair.getPublic(), x25519KeyPair.getPublic());
+
+        // Then
+        assertThat(keyId1).isEqualTo(keyId2);
+    }
+
+    @Test
+    void hybridEnvelopeShouldContainHybridKeyId() throws Exception {
+        // Given
+        KeyPair mlKemKeyPair = PqcCryptoEngine.generateKeyPair(KemAlgorithm.ML_KEM_768);
+        KeyPair x25519KeyPair = PqcCryptoEngine.generateX25519KeyPair();
+        PqcCryptoEngine engine = new PqcCryptoEngine(
+                KemAlgorithm.ML_KEM_768, true,
+                mlKemKeyPair.getPublic(), mlKemKeyPair.getPrivate(), x25519KeyPair);
+        byte[] plaintext = "hybrid key id envelope test".getBytes(StandardCharsets.UTF_8);
+
+        // When
+        byte[] encrypted = engine.encrypt(plaintext);
+
+        // Then - embedded key ID should match the hybrid-computed key ID
+        int embeddedKeyId = ByteBuffer.wrap(encrypted, 1, 4).getInt();
+        int expectedKeyId = PqcCryptoEngine.computeKeyId(mlKemKeyPair.getPublic(), x25519KeyPair.getPublic());
+        assertThat(embeddedKeyId).isEqualTo(expectedKeyId);
+    }
 }

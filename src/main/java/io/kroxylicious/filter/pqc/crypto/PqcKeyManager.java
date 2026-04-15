@@ -91,7 +91,9 @@ public class PqcKeyManager {
         for (String keyId : keyProvider.listKeyIds()) {
             try {
                 KeyPair kp = keyProvider.getKeyPairById(keyId, algorithm);
-                int computedId = PqcCryptoEngine.computeKeyId(kp.getPublic());
+                int computedId = (hybridMode && x25519KeyPair != null)
+                        ? PqcCryptoEngine.computeKeyId(kp.getPublic(), x25519KeyPair.getPublic())
+                        : PqcCryptoEngine.computeKeyId(kp.getPublic());
                 if (!engineCache.containsKey(computedId)) {
                     PqcCryptoEngine retiredEngine = new PqcCryptoEngine(algorithm, hybridMode,
                             kp.getPublic(), kp.getPrivate(), x25519KeyPair);

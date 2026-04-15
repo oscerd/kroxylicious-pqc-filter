@@ -137,7 +137,6 @@ public class PqcCryptoEngine {
         this.mlKemPublicKey = mlKemPublicKey;
         this.mlKemPrivateKey = mlKemPrivateKey;
         this.secureRandom = new SecureRandom();
-        this.keyId = computeKeyId(mlKemPublicKey);
 
         if (hybridMode) {
             if (x25519KeyPair != null) {
@@ -154,10 +153,12 @@ public class PqcCryptoEngine {
                     throw new IllegalStateException("Failed to generate X25519 static key pair for hybrid mode", e);
                 }
             }
+            this.keyId = computeKeyId(mlKemPublicKey, x25519StaticPublicKey);
         }
         else {
             this.x25519StaticPublicKey = null;
             this.x25519StaticPrivateKey = null;
+            this.keyId = computeKeyId(mlKemPublicKey);
         }
     }
 
@@ -338,14 +339,16 @@ public class PqcCryptoEngine {
     }
 
     /**
-     * Return the key ID for this engine, derived from the ML-KEM public key.
+     * Return the key ID for this engine, derived from the key material used for encryption.
+     * In PQC-only mode this is derived from the ML-KEM public key alone.
+     * In hybrid mode this incorporates both the ML-KEM and X25519 public keys.
      */
     public int getKeyId() {
         return keyId;
     }
 
     /**
-     * Compute a 4-byte key ID from an ML-KEM public key.
+     * Compute a 4-byte key ID from an ML-KEM public key (PQC-only mode).
      * The key ID is the first 4 bytes of SHA-256(publicKey.getEncoded()),
      * interpreted as a big-endian int.
      */
@@ -353,6 +356,23 @@ public class PqcCryptoEngine {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             byte[] hash = digest.digest(publicKey.getEncoded());
+            return ByteBuffer.wrap(hash, 0, KEY_ID_LENGTH).getInt();
+        }
+        catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 not available", e);
+        }
+    }
+
+    /**
+     * Compute a 4-byte key ID from both ML-KEM and X25519 public keys (hybrid mode).
+     * The key ID is the first 4 bytes of SHA-256(mlKemPublicKey.getEncoded() || x25519PublicKey.getEncoded()),
+     * interpreted as a big-endian int. This ensures the key ID changes if either key changes.
+     */
+    public static int computeKeyId(PublicKey mlKemPublicKey, PublicKey x25519PublicKey) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            digest.update(mlKemPublicKey.getEncoded());
+            byte[] hash = digest.digest(x25519PublicKey.getEncoded());
             return ByteBuffer.wrap(hash, 0, KEY_ID_LENGTH).getInt();
         }
         catch (NoSuchAlgorithmException e) {
