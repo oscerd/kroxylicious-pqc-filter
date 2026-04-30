@@ -24,14 +24,15 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermission;
 import java.security.GeneralSecurityException;
 import java.security.KeyPair;
 import java.security.PrivateKey;
 import java.security.PublicKey;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Default {@link KeyProvider} implementation that loads ML-KEM key pairs
@@ -112,6 +113,7 @@ public class FileSystemKeyProvider implements KeyProvider {
         if (Files.exists(pubKeyPath) && Files.exists(privKeyPath)) {
             LOG.info("Loading existing ML-KEM key pair ({}) from {} and {}",
                     algorithm.getDisplayName(), pubKeyPath, privKeyPath);
+            checkPrivateKeyPermissions(privKeyPath);
             publicKey = PqcCryptoEngine.loadPublicKey(pubKeyPath);
             privateKey = PqcCryptoEngine.loadPrivateKey(privKeyPath);
         }
@@ -180,6 +182,7 @@ public class FileSystemKeyProvider implements KeyProvider {
 
             LOG.info("Loading ML-KEM key pair ({}) for key '{}' from {} and {}",
                     algorithm.getDisplayName(), keyId, pubKeyPath, privKeyPath);
+            checkPrivateKeyPermissions(privKeyPath);
 
             PublicKey publicKey = PqcCryptoEngine.loadPublicKey(pubKeyPath);
             PrivateKey privateKey = PqcCryptoEngine.loadPrivateKey(privKeyPath);
@@ -214,6 +217,7 @@ public class FileSystemKeyProvider implements KeyProvider {
 
         if (Files.exists(x25519PubPath) && Files.exists(x25519PrivPath)) {
             LOG.info("Loading existing X25519 key pair from {} and {}", x25519PubPath, x25519PrivPath);
+            checkPrivateKeyPermissions(x25519PrivPath);
             this.x25519KeyPair = new KeyPair(
                     PqcCryptoEngine.loadX25519PublicKey(x25519PubPath),
                     PqcCryptoEngine.loadX25519PrivateKey(x25519PrivPath));
@@ -255,6 +259,22 @@ public class FileSystemKeyProvider implements KeyProvider {
     @Override
     public List<String> listKeyIds() {
         return List.copyOf(keyEntries.keySet());
+    }
+
+    private void checkPrivateKeyPermissions(Path privKeyPath) {
+        try {
+            Set<PosixFilePermission> perms = Files.getPosixFilePermissions(privKeyPath);
+            if (perms.contains(PosixFilePermission.GROUP_READ) || perms.contains(PosixFilePermission.OTHERS_READ)) {
+                LOG.warn("Private key file {} has overly permissive permissions: {}. "
+                        + "Only owner-readable (e.g., chmod 600) is recommended.", privKeyPath, perms);
+            }
+        }
+        catch (UnsupportedOperationException e) {
+            LOG.debug("POSIX file permissions not supported on this filesystem, skipping permission check for {}", privKeyPath);
+        }
+        catch (IOException e) {
+            LOG.warn("Unable to check file permissions for {}: {}", privKeyPath, e.getMessage());
+        }
     }
 
     private void ensureConfigured() {
