@@ -19,15 +19,20 @@ import io.kroxylicious.filter.pqc.config.PqcEncryptionConfig;
 import io.kroxylicious.filter.pqc.config.PqcEncryptionConfig.KemAlgorithm;
 import io.kroxylicious.filter.pqc.config.PqcEncryptionConfig.KeyConfig;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledOnOs;
+import org.junit.jupiter.api.condition.OS;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermission;
 import java.security.GeneralSecurityException;
 import java.security.KeyPair;
 import java.util.Iterator;
 import java.util.List;
 import java.util.ServiceConfigurationError;
 import java.util.ServiceLoader;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -446,6 +451,112 @@ class FileSystemKeyProviderTest {
         byte[] decrypted = engine1Retired.decrypt(encrypted);
 
         assertThat(decrypted).isEqualTo(plaintext);
+    }
+
+    // --- Private key permission tests ---
+
+    @Test
+    @EnabledOnOs(OS.LINUX)
+    void shouldLoadKeysWithRestrictivePermissions() throws Exception {
+        Path pubKeyPath = tempDir.resolve("pub.der");
+        Path privKeyPath = tempDir.resolve("priv.der");
+        KeyPair kp = PqcCryptoEngine.generateKeyPair(KemAlgorithm.ML_KEM_768);
+        PqcCryptoEngine.saveKey(pubKeyPath, kp.getPublic().getEncoded());
+        PqcCryptoEngine.saveKey(privKeyPath, kp.getPrivate().getEncoded());
+
+        Files.setPosixFilePermissions(privKeyPath,
+                Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE));
+
+        PqcEncryptionConfig config = new PqcEncryptionConfig(
+                KemAlgorithm.ML_KEM_768, false,
+                pubKeyPath.toString(), privKeyPath.toString(), null, null, null);
+
+        FileSystemKeyProvider provider = new FileSystemKeyProvider();
+        provider.configure(config);
+
+        KeyPair loaded = provider.getActiveKeyPair(KemAlgorithm.ML_KEM_768);
+        assertThat(loaded.getPublic().getEncoded()).isEqualTo(kp.getPublic().getEncoded());
+        assertThat(loaded.getPrivate().getEncoded()).isEqualTo(kp.getPrivate().getEncoded());
+    }
+
+    @Test
+    @EnabledOnOs(OS.LINUX)
+    void shouldLoadKeysWithPermissivePermissions() throws Exception {
+        Path pubKeyPath = tempDir.resolve("pub.der");
+        Path privKeyPath = tempDir.resolve("priv.der");
+        KeyPair kp = PqcCryptoEngine.generateKeyPair(KemAlgorithm.ML_KEM_768);
+        PqcCryptoEngine.saveKey(pubKeyPath, kp.getPublic().getEncoded());
+        PqcCryptoEngine.saveKey(privKeyPath, kp.getPrivate().getEncoded());
+
+        Files.setPosixFilePermissions(privKeyPath,
+                Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE,
+                        PosixFilePermission.GROUP_READ, PosixFilePermission.OTHERS_READ));
+
+        PqcEncryptionConfig config = new PqcEncryptionConfig(
+                KemAlgorithm.ML_KEM_768, false,
+                pubKeyPath.toString(), privKeyPath.toString(), null, null, null);
+
+        FileSystemKeyProvider provider = new FileSystemKeyProvider();
+        provider.configure(config);
+
+        KeyPair loaded = provider.getActiveKeyPair(KemAlgorithm.ML_KEM_768);
+        assertThat(loaded.getPublic().getEncoded()).isEqualTo(kp.getPublic().getEncoded());
+        assertThat(loaded.getPrivate().getEncoded()).isEqualTo(kp.getPrivate().getEncoded());
+    }
+
+    @Test
+    @EnabledOnOs(OS.LINUX)
+    void shouldCheckPermissionsInMultiKeyMode() throws Exception {
+        KeyPair kp = PqcCryptoEngine.generateKeyPair(KemAlgorithm.ML_KEM_768);
+        Path keyDir = tempDir.resolve("key1");
+        keyDir.toFile().mkdirs();
+
+        Path pubPath = keyDir.resolve("pub.der");
+        Path privPath = keyDir.resolve("priv.der");
+        PqcCryptoEngine.saveKey(pubPath, kp.getPublic().getEncoded());
+        PqcCryptoEngine.saveKey(privPath, kp.getPrivate().getEncoded());
+
+        Files.setPosixFilePermissions(privPath,
+                Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE,
+                        PosixFilePermission.OTHERS_READ));
+
+        List<KeyConfig> keys = List.of(
+                new KeyConfig("active", pubPath.toString(), privPath.toString()));
+
+        PqcEncryptionConfig config = new PqcEncryptionConfig(
+                KemAlgorithm.ML_KEM_768, false, null, null, null, null, null,
+                "active", keys);
+
+        FileSystemKeyProvider provider = new FileSystemKeyProvider();
+        provider.configure(config);
+
+        KeyPair loaded = provider.getActiveKeyPair(KemAlgorithm.ML_KEM_768);
+        assertThat(loaded.getPublic().getEncoded()).isEqualTo(kp.getPublic().getEncoded());
+    }
+
+    @Test
+    @EnabledOnOs(OS.LINUX)
+    void shouldCheckX25519PermissionsInHybridMode() throws Exception {
+        Path pubKeyPath = tempDir.resolve("pub.der");
+        Path privKeyPath = tempDir.resolve("priv.der");
+        PqcEncryptionConfig config = new PqcEncryptionConfig(
+                KemAlgorithm.ML_KEM_768, true,
+                pubKeyPath.toString(), privKeyPath.toString(), null, null, null);
+
+        FileSystemKeyProvider provider1 = new FileSystemKeyProvider();
+        provider1.configure(config);
+
+        Path x25519PrivPath = tempDir.resolve("x25519-private.der");
+        Files.setPosixFilePermissions(x25519PrivPath,
+                Set.of(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE,
+                        PosixFilePermission.GROUP_READ));
+
+        FileSystemKeyProvider provider2 = new FileSystemKeyProvider();
+        provider2.configure(config);
+
+        assertThat(provider2.getX25519KeyPair()).isNotNull();
+        assertThat(provider2.getX25519KeyPair().getPublic().getEncoded())
+                .isEqualTo(provider1.getX25519KeyPair().getPublic().getEncoded());
     }
 
     @Test
